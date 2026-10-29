@@ -115,8 +115,10 @@ TOOLS = [
         "description": "Wczytuje warstwę: usługa WMS/WFS/XYZ (uri w składni "
                        "QGIS) albo dane spod adresu http(s) (GeoJSON, GPKG, "
                        "ZIP, KML, GML, zapytanie Overpass API – provider "
-                       "„ogr”; wtyczka sama pobierze plik). Nie zgaduj "
-                       "adresów usług – do nieznanych usług użyj "
+                       "„ogr”; wtyczka sama pobierze plik). Pliki i bazy "
+                       "danych z dysku nie są dostępne – użytkownik "
+                       "wczytuje je w QGIS sam, potem wskaż warstwę nazwą. "
+                       "Nie zgaduj adresów usług – do nieznanych usług użyj "
                        "add_service.",
         "inputSchema": _schema({
             "provider": {"type": "string",
@@ -318,12 +320,16 @@ _EN = {
         'Only selected features of the INPUT layer.',
     'Wczytuje warstwę: usługa WMS/WFS/XYZ (uri w składni QGIS) albo dane spod '
     'adresu http(s) (GeoJSON, GPKG, ZIP, KML, GML, zapytanie Overpass API – '
-    'provider „ogr”; wtyczka sama pobierze plik). Nie zgaduj adresów usług – '
-    'do nieznanych usług użyj add_service.':
+    'provider „ogr”; wtyczka sama pobierze plik). Pliki i bazy danych '
+    'z dysku nie są dostępne – użytkownik wczytuje je w QGIS sam, potem wskaż '
+    'warstwę nazwą. Nie zgaduj adresów usług – do nieznanych usług użyj '
+    'add_service.':
         'Loads a layer: a WMS/WFS/XYZ service (uri in QGIS syntax) or data '
         'from an http(s) address (GeoJSON, GPKG, ZIP, KML, GML, Overpass API '
-        'query – provider “ogr”; the plugin downloads the file). Do not guess '
-        'service addresses – use add_service for unknown services.',
+        'query – provider “ogr”; the plugin downloads the file). Files and '
+        'databases on disk are not available – the user loads them in QGIS, '
+        'then refer to the layer by name. Do not guess service addresses – '
+        'use add_service for unknown services.',
     'Nazwa warstwy w projekcie.':
         'Layer name in the project.',
     'Dodaje warstwy z usługi WMS/WMTS/WFS/WCS: wtyczka pobiera '

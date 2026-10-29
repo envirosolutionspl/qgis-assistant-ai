@@ -210,6 +210,40 @@ def test_restricted_executor_reads_only_project_layers(iface, tmp_path):
     assert ok
 
 
+def test_restricted_executor_does_not_load_files(iface, tmp_path):
+    from qgis.core import QgsVectorFileWriter
+    from gis_assistant_ai import plan_model
+    from gis_assistant_ai.executor import PlanExecutor
+    layer = _points_layer()
+    path = str(tmp_path / "dysk.gpkg")
+    opts = QgsVectorFileWriter.SaveVectorOptions()
+    opts.driverName = "GPKG"
+    QgsVectorFileWriter.writeAsVectorFormatV3(
+        layer, path, QgsProject.instance().transformContext(), opts)
+
+    def plan():
+        return plan_model.normalize({
+            "type": "plan", "title": "Plik", "steps": [
+                {"id": "s1", "action": "load_layer", "title": "Wczytaj",
+                 "provider": "ogr", "uri": path, "name": "z dysku"}]})
+
+    # MCP: krok kończy się błędem, nikt nie jest pytany o zgodę
+    ex = PlanExecutor(iface, restrict_files=True)
+    asked = []
+    ex.confirmLoad.connect(lambda i, label: asked.append(label))
+    ex.start(plan())
+    idx, msg = _wait(ex.stepFailed)
+    assert idx == 0 and "MCP" in msg and not asked
+    assert not QgsProject.instance().mapLayersByName("z dysku")
+    ex.abort()
+    # panel wtyczki: pytanie o zgodę (okno QGIS)
+    ex = PlanExecutor(iface)
+    ex.start(plan())
+    idx, label = _wait(ex.confirmLoad)
+    assert path in label
+    ex.abort()
+
+
 class FakeSettings:
     """Ustawienia w słowniku – zamiast profilu QGIS."""
 

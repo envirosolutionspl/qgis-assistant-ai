@@ -172,7 +172,8 @@ class PlanExecutor(QObject):
 
         restrict_files=True (serwer MCP – planu nie ogląda człowiek):
         algorytmy Processing zapisują wyniki tylko do warstw tymczasowych
-        i czytają tylko warstwy projektu, nie pliki z dysku.
+        i czytają tylko warstwy projektu, a load_layer nie wczytuje plików
+        ani baz danych z dysku.
         """
         super().__init__(parent)
         self.iface = iface
@@ -831,6 +832,13 @@ class PlanExecutor(QObject):
             return
         needs_ok = (provider in CONSENT_PROVIDERS or "/vsi" in uri.lower()
                     or uri.lower().startswith("file:"))
+        if self.restrict_files and (needs_ok or "file:" in uri.lower()):
+            # MCP: nikt nie potwierdza w oknie QGIS, a zgoda wpisana przez
+            # model nie wystarcza – dane z dysku dodaje użytkownik
+            raise StepError(tr(
+                "Wczytanie pliku lub bazy danych (%s) nie jest dostępne "
+                "przez MCP – dodaj warstwę w QGIS, a potem wskaż ją "
+                "nazwą.") % (provider or "?"))
         if needs_ok and self.idx not in self._confirmed_loads:
             # plik lub baza wskazane przez model – tylko za zgodą użytkownika
             # (audyt B2)

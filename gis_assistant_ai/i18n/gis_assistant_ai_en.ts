@@ -45,6 +45,11 @@
     </message>
     <message>
         <location filename="../executor.py"/>
+        <source>Wczytanie pliku lub bazy danych (%s) nie jest dostępne przez MCP – dodaj warstwę w QGIS, a potem wskaż ją nazwą.</source>
+        <translation>Loading a file or database (%s) is not available through MCP – add the layer in QGIS, then refer to it by name.</translation>
+    </message>
+    <message>
+        <location filename="../executor.py"/>
         <source>Wynik „%s” może być tylko warstwą tymczasową (TEMPORARY_OUTPUT) – zapis do pliku lub bazy wykonaj w QGIS.</source>
         <translation>Output “%s” can only be a temporary layer (TEMPORARY_OUTPUT) – save it to a file or database in QGIS.</translation>
     </message>

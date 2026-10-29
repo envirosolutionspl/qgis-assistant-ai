@@ -99,7 +99,8 @@ class _ToolRun(QObject):
         self.logs = []
         self.warnings = []
         self.done = False
-        # przez MCP algorytmy nie zapisują ani nie czytają plików z dysku
+        # przez MCP algorytmy nie zapisują ani nie czytają plików z dysku,
+        # a load_layer nie wczytuje plików ani baz danych
         self.executor = PlanExecutor(iface, self, restrict_files=True)
         ex = self.executor
         ex.log.connect(lambda level, text: self.logs.append(

@@ -153,8 +153,11 @@ sprzed 1.0 (`mcp/token`) jest przy pierwszym uruchomieniu zamieniany na skrót i
 unieważnia stary. Zasady bezpieczeństwa executora obowiązują: kroki `user_action`, `python`,
 `processing_dialog` nie są dostępne; adresy w sieci wewnętrznej wymagają `allow_internal_network=true` w wywołaniu.
 Algorytmy Processing uruchamiane przez MCP (`run_processing`, kroki `run_plan`) zapisują wyniki wyłącznie do warstw
-tymczasowych i czytają tylko warstwy projektu – ścieżka pliku jako wejście lub wyjście kończy krok błędem
-(`PlanExecutor(restrict_files=True)`). Panel wtyczki tego ograniczenia nie ma: plan jest widoczny przed „WYKONAJ”.
+tymczasowych i czytają tylko warstwy projektu – ścieżka pliku jako wejście lub wyjście kończy krok błędem.
+`load_layer` przez MCP nie wczytuje plików ani baz danych z dysku (także z `allow_internal_network=true`, które
+dotyczy wyłącznie adresów w sieci wewnętrznej) – użytkownik dodaje je w QGIS sam. Oba ograniczenia:
+`PlanExecutor(restrict_files=True)`. Panel wtyczki ich nie ma: plan jest widoczny przed „WYKONAJ”, a wczytanie
+pliku potwierdza się w oknie QGIS.
 Każde wywołanie jest logowane w dzienniku QGIS (zakładka GIS Assistant AI).
 Opisy narzędzi, instrukcje serwera i komunikaty mostu są po polsku, gdy język interfejsu QGIS to polski, w każdym innym
 przypadku po angielsku (`mcp_protocol._EN`, `mcp_server.INSTRUCTIONS`, `mcp_bridge.TEXTS`; most dostaje `--lang` w konfiguracji).

@@ -40,7 +40,7 @@ Odpowiedzi AI przesyłane są strumieniowo, asystent korzysta także z algorytm�
 - Krótki skrypt PyQGIS – tylko po włączeniu tej opcji w ustawieniach i zatwierdzeniu kodu
 
 ### Serwer MCP (Claude Desktop):
-Po włączeniu w ustawieniach wtyczki („Serwer MCP (Claude Desktop)”) QGIS udostępnia aplikacji Claude Desktop narzędzia: opis projektu, pola warstw, wyszukiwanie i parametry algorytmów, Processing, wczytywanie warstw i usług, ULDK, BDOT10k, styl warstwy i plan wielokrokowy. Serwer nasłuchuje tylko na `127.0.0.1` i wymaga tokenu. Algorytmy uruchamiane przez Claude zapisują wyniki tylko do warstw tymczasowych i nie czytają plików z dysku spoza projektu; konfigurację do wklejenia w `claude_desktop_config.json` kopiuje przycisk w ustawieniach. Szczegóły: [DEVELOPMENT.md](DEVELOPMENT.md#serwer-mcp-claude-desktop).
+Po włączeniu w ustawieniach wtyczki („Serwer MCP (Claude Desktop)”) QGIS udostępnia aplikacji Claude Desktop narzędzia: opis projektu, pola warstw, wyszukiwanie i parametry algorytmów, Processing, wczytywanie warstw i usług, ULDK, BDOT10k, styl warstwy i plan wielokrokowy. Serwer nasłuchuje tylko na `127.0.0.1` i wymaga tokenu. Claude nie wczytuje plików ani baz danych z dysku (dodajesz je w QGIS sam), a algorytmy uruchamiane przez Claude zapisują wyniki tylko do warstw tymczasowych; konfigurację do wklejenia w `claude_desktop_config.json` kopiuje przycisk w ustawieniach. Szczegóły: [DEVELOPMENT.md](DEVELOPMENT.md#serwer-mcp-claude-desktop).
 
 ### Obsługiwani dostawcy modeli AI:
 - Anthropic Claude – wymagany klucz API z Claude Console
@@ -111,7 +111,7 @@ AI responses are streamed, the assistant also uses algorithms of installed plugi
 - A short PyQGIS script – only when enabled in the settings and after approving the code
 
 ### MCP server (Claude Desktop):
-When enabled in the plugin settings (“MCP server (Claude Desktop)”), QGIS offers tools to the Claude Desktop app: project description, layer fields, algorithm search and parameters, Processing, loading layers and services, ULDK, BDOT10k, layer style and a multi-step plan. The server listens on `127.0.0.1` only and requires a token. Algorithms run by Claude write results only to temporary layers and do not read files from disk outside the project; a button in the settings copies the configuration to paste into `claude_desktop_config.json`. Details (in Polish): [DEVELOPMENT.md](DEVELOPMENT.md#serwer-mcp-claude-desktop).
+When enabled in the plugin settings (“MCP server (Claude Desktop)”), QGIS offers tools to the Claude Desktop app: project description, layer fields, algorithm search and parameters, Processing, loading layers and services, ULDK, BDOT10k, layer style and a multi-step plan. The server listens on `127.0.0.1` only and requires a token. Claude does not load files or databases from disk (you add them in QGIS yourself), and algorithms run by Claude write results only to temporary layers; a button in the settings copies the configuration to paste into `claude_desktop_config.json`. Details (in Polish): [DEVELOPMENT.md](DEVELOPMENT.md#serwer-mcp-claude-desktop).
 
 ### Supported AI model providers:
 - Anthropic Claude – requires an API key from the Claude Console
