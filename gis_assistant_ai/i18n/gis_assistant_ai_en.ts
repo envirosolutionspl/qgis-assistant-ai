@@ -44,6 +44,21 @@
         <translation> – settings</translation>
     </message>
     <message>
+        <location filename="../executor.py"/>
+        <source>Wynik „%s” może być tylko warstwą tymczasową (TEMPORARY_OUTPUT) – zapis do pliku lub bazy wykonaj w QGIS.</source>
+        <translation>Output “%s” can only be a temporary layer (TEMPORARY_OUTPUT) – save it to a file or database in QGIS.</translation>
+    </message>
+    <message>
+        <location filename="../executor.py"/>
+        <source>Parametr „%s” wskazuje plik na dysku – dozwolone są tylko warstwy projektu.</source>
+        <translation>Parameter “%s” points to a file on disk – only project layers are allowed.</translation>
+    </message>
+    <message>
+        <location filename="../executor.py"/>
+        <source>Parametr „%s”: „%s” nie jest warstwą projektu – podaj identyfikator lub nazwę wczytanej warstwy.</source>
+        <translation>Parameter “%s”: “%s” is not a project layer – give the id or name of a loaded layer.</translation>
+    </message>
+    <message>
         <location filename="../executor.py" line="535"/>
         <source>%s: %d obiekt(y)</source>
         <translation>%s: %d feature(s)</translation>

@@ -164,6 +164,52 @@ def test_executor_stops_on_empty_result(iface):
     ex.abort()
 
 
+def _run_buffer(iface, restrict, input_ref, output):
+    """Wykonaj bufor; zwraca (czy się udało, komunikat błędu)."""
+    from gis_assistant_ai import plan_model
+    from gis_assistant_ai.executor import PlanExecutor
+    plan = plan_model.validate(plan_model.normalize({
+        "type": "plan", "title": "Bufor", "steps": [
+            {"id": "s1", "action": "processing", "title": "Bufor",
+             "algorithm": "native:buffer",
+             "params": {"INPUT": input_ref, "DISTANCE": 10,
+                        "OUTPUT": output}}]}))
+    ex = PlanExecutor(iface, restrict_files=restrict)
+    failed = []
+    ex.stepFailed.connect(lambda i, msg: (failed.append(msg), ex.abort()))
+    ex.start(plan)
+    (ok,) = _wait(ex.finished)
+    return ok, failed[0] if failed else ""
+
+
+def test_restricted_executor_writes_only_temporary_layers(iface, tmp_path):
+    layer = _points_layer()
+    target = str(tmp_path / "bufor.gpkg")
+    ok, msg = _run_buffer(iface, True, layer.id(), target)
+    assert not ok and "OUTPUT" in msg
+    assert not (tmp_path / "bufor.gpkg").exists()
+    ok, _ = _run_buffer(iface, True, layer.id(), "TEMPORARY_OUTPUT")
+    assert ok
+    # panel wtyczki (plan oglądany przed WYKONAJ) może zapisać plik
+    ok, msg = _run_buffer(iface, False, layer.id(), target)
+    assert ok, msg
+    assert (tmp_path / "bufor.gpkg").exists()
+
+
+def test_restricted_executor_reads_only_project_layers(iface, tmp_path):
+    from qgis.core import QgsVectorFileWriter
+    layer = _points_layer()
+    path = str(tmp_path / "dysk.gpkg")
+    opts = QgsVectorFileWriter.SaveVectorOptions()
+    opts.driverName = "GPKG"
+    QgsVectorFileWriter.writeAsVectorFormatV3(
+        layer, path, QgsProject.instance().transformContext(), opts)
+    ok, msg = _run_buffer(iface, True, path, "TEMPORARY_OUTPUT")
+    assert not ok and "INPUT" in msg
+    ok, _ = _run_buffer(iface, True, "szkoly", "TEMPORARY_OUTPUT")
+    assert ok
+
+
 class FakeSettings:
     """Ustawienia w słowniku – zamiast profilu QGIS."""
 

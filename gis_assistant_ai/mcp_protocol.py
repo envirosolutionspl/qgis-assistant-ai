@@ -87,9 +87,11 @@ TOOLS = [
     {
         "name": "run_processing",
         "description": "Uruchamia algorytm Processing i dodaje wynik do "
-                       "projektu. Warstwy wejściowe podaj jako id lub nazwę. "
-                       "Wyjścia pomiń (zostaną tymczasowe) albo podaj "
-                       "„TEMPORARY_OUTPUT”. Odległości są w jednostkach "
+                       "projektu. Warstwy wejściowe podaj jako id lub nazwę "
+                       "warstwy projektu (pliki z dysku nie są dozwolone). "
+                       "Wyjścia pomiń albo podaj „TEMPORARY_OUTPUT” – wyniki "
+                       "są zawsze warstwami tymczasowymi, zapis do pliku "
+                       "wykonuje użytkownik. Odległości są w jednostkach "
                        "układu warstwy (warstwy w stopniach najpierw przelicz "
                        "native:reprojectlayer do EPSG:2180).",
         "inputSchema": _schema({
@@ -297,15 +299,17 @@ _EN = {
     'Identyfikator, np. native:buffer.':
         'Identifier, e.g. native:buffer.',
     'Uruchamia algorytm Processing i dodaje wynik do projektu. Warstwy '
-    'wejściowe podaj jako id lub nazwę. Wyjścia pomiń (zostaną tymczasowe) '
-    'albo podaj „TEMPORARY_OUTPUT”. Odległości są w jednostkach układu '
-    'warstwy (warstwy w stopniach najpierw przelicz native:reprojectlayer do '
-    'EPSG:2180).':
+    'wejściowe podaj jako id lub nazwę warstwy projektu (pliki z dysku nie są '
+    'dozwolone). Wyjścia pomiń albo podaj „TEMPORARY_OUTPUT” – wyniki są '
+    'zawsze warstwami tymczasowymi, zapis do pliku wykonuje użytkownik. '
+    'Odległości są w jednostkach układu warstwy (warstwy w stopniach najpierw '
+    'przelicz native:reprojectlayer do EPSG:2180).':
         'Runs a Processing algorithm and adds the result to the project. Give '
-        'input layers as id or name. Omit outputs (they become temporary) or '
-        'pass “TEMPORARY_OUTPUT”. Distances are in the layer CRS units '
-        '(reproject layers in degrees first with native:reprojectlayer, e.g. '
-        'to EPSG:2180 for Poland).',
+        'input layers as the id or name of a project layer (files on disk are '
+        'not allowed). Omit outputs or pass “TEMPORARY_OUTPUT” – results are '
+        'always temporary layers; saving to a file is up to the user. '
+        'Distances are in the layer CRS units (reproject layers in degrees '
+        'first with native:reprojectlayer, e.g. to EPSG:2180 for Poland).',
     'Parametry algorytmu (dokładne nazwy QGIS).':
         'Algorithm parameters (exact QGIS names).',
     'Nazwa warstwy wynikowej w projekcie.':

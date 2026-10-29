@@ -167,10 +167,16 @@ class PlanExecutor(QObject):
     # True = wszystko wykonane
     finished = pyqtSignal(bool)
 
-    def __init__(self, iface, parent=None):
-        """Utwórz executor; iface to QgisInterface (mapa, aktywna warstwa)."""
+    def __init__(self, iface, parent=None, restrict_files=False):
+        """Utwórz executor; iface to QgisInterface (mapa, aktywna warstwa).
+
+        restrict_files=True (serwer MCP – planu nie ogląda człowiek):
+        algorytmy Processing zapisują wyniki tylko do warstw tymczasowych
+        i czytają tylko warstwy projektu, nie pliki z dysku.
+        """
         super().__init__(parent)
         self.iface = iface
+        self.restrict_files = restrict_files
         self.plan = None
         self.steps = []
         self.idx = -1
@@ -520,6 +526,8 @@ class PlanExecutor(QObject):
             alg.provider().id().lower() if alg.provider() else "")
         if fix:
             fix(clean, self.log)
+        if self.restrict_files:
+            _check_file_access(defs, clean)
         return clean
 
     def _alg_done(self, step, alg, context, feedback, ok, results, rid=None,
@@ -1652,6 +1660,49 @@ def _printable(params):
                                           type(None)))
                       else str(v))
     return out
+
+
+# typy parametrów Processing, które czytają warstwę (albo plik z dysku)
+_LAYER_PARAM_TYPES = {"source", "vector", "raster", "layer", "multilayer",
+                      "mesh", "pointcloud", "vectortile"}
+
+
+def _is_temporary_output(value):
+    """Czy wyjście algorytmu to warstwa tymczasowa (bez zapisu na dysk)."""
+    text = str(value).strip()
+    return text == "TEMPORARY_OUTPUT" or text.lower().startswith("memory:")
+
+
+def _check_file_access(defs, params):
+    """Odrzuć zapis i odczyt plików przez algorytm (tryb restrict_files).
+
+    Wyjścia muszą być tymczasowe, a wejścia warstwowe – warstwami projektu;
+    parametry typu „plik” nie są dozwolone. Zgłasza StepError.
+    """
+    for name, value in params.items():
+        p = defs[name]
+        if p.isDestination():
+            if not _is_blank(value) and not _is_temporary_output(value):
+                raise StepError(tr(
+                    "Wynik „%s” może być tylko warstwą tymczasową "
+                    "(TEMPORARY_OUTPUT) – zapis do pliku lub bazy wykonaj "
+                    "w QGIS.") % name)
+        elif p.type() == "file":
+            if not _is_blank(value):
+                raise StepError(tr(
+                    "Parametr „%s” wskazuje plik na dysku – dozwolone są "
+                    "tylko warstwy projektu.") % name)
+        elif p.type() in _LAYER_PARAM_TYPES:
+            for item in value if isinstance(value, list) else [value]:
+                if isinstance(item, QgsProcessingFeatureSourceDefinition):
+                    item = _source_value(item)
+                if isinstance(item, QgsMapLayer) or _is_blank(item):
+                    continue
+                if _project_layer(str(item)) is None:
+                    raise StepError(tr(
+                        "Parametr „%s”: „%s” nie jest warstwą projektu – "
+                        "podaj identyfikator lub nazwę wczytanej warstwy.")
+                        % (name, str(item)[:120]))
 
 
 def _source_value(defn):
