@@ -3,7 +3,7 @@ name=GIS Assistant AI
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 description=PL: GIS Assistant AI to asystent AI dla QGIS: opisz zadanie językiem naturalnym, a wtyczka wskaże narzędzie albo przygotuje i wykona plan działań krok po kroku. EN: AI assistant for QGIS – describe a task in plain language and get the right tool or an executable step-by-step plan.
-version=1.0
+version=1.0.1
 author=EnviroSolutions Sp. z o.o.
 email=gis@envirosolutions.pl
 
@@ -34,7 +34,10 @@ server=False
 hasProcessingProvider=no
 supportsQt6=True
 
-changelog=1.0 – PL: pierwsze publiczne wydanie. Panel z linią poleceń: wskazanie narzędzia albo plan działań
+changelog=1.0.1 – PL: serwer MCP: algorytmy Processing uruchamiane przez Claude zapisują wyniki tylko do warstw
+  tymczasowych i czytają tylko warstwy projektu (bez plików z dysku). EN: MCP server: Processing algorithms run by
+  Claude write results only to temporary layers and read only project layers (no files from disk).
+  1.0 – PL: pierwsze publiczne wydanie. Panel z linią poleceń: wskazanie narzędzia albo plan działań
   wykonywany krok po kroku (Processing, usługi WMS/WMTS/WFS/WCS i XYZ, dane spod adresu i z Overpass API, granice
   z ULDK, paczki BDOT10k), wyszukiwanie oficjalnych usług w internecie, kontrola wyników i naprawa planu przez AI;
   modele Anthropic Claude, OpenAI (i zgodne) oraz Ollama; serwer MCP dla Claude Desktop; interfejs PL/EN.
