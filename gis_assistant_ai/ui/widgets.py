@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Zwijana sekcja panelu: belka w kolorze sekcji + treść."""
 from qgis.PyQt.QtCore import Qt, pyqtSignal
-from qgis.PyQt.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
+from qgis.PyQt.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from ..i18n import tr
 from . import icons
@@ -88,7 +88,6 @@ class ElidedLabel(QLabel):
         super().__init__(parent)
         self._full = text
         self.setToolTip(text)
-        from qgis.PyQt.QtWidgets import QSizePolicy
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(0)
         self._update()

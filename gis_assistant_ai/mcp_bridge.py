@@ -19,9 +19,12 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
-PROTOCOL_VERSION = "2025-06-18"
+PROTOCOL_VERSION = "2025-06-18"     # musi być zgodna z mcp_protocol (most nie importuje wtyczki – sprawdza to test)
+SERVER_NAME = "gis-assistant-ai-qgis"
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 CALL_TIMEOUT_S = 21 * 60        # dłużej niż limit narzędzia w QGIS (20 min)
 OTHER_TIMEOUT_S = 30
 
@@ -60,12 +63,35 @@ def _offline_tool():
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}}
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Bez przekierowań – nagłówek z tokenem nie może trafić pod inny adres."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# Bez ProxyHandler({}) urllib użyłby proxy systemowego (HTTP_PROXY, ustawienia Windows) i token mógłby trafić
+# do serwera proxy; serwer w QGIS jest zawsze lokalny.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+def local_url(url):
+    """Czy adres wskazuje serwer lokalny po http (jedyny obsługiwany przez wtyczkę)."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host, _ = parts.hostname, parts.port   # .port zgłasza ValueError dla nieprawidłowego portu
+    except ValueError:
+        return False
+    return parts.scheme == "http" and host in LOCAL_HOSTS
+
+
 def _post(url, token, message, timeout):
     data = json.dumps(message, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={
         "Content-Type": "application/json", "Accept": "application/json",
         "Authorization": "Bearer %s" % token, "User-Agent": "gis-assistant-mcp-bridge"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310 – adres lokalny z konfiguracji
+    # Bandit B310: schemat i host sprawdzone w main() (local_url: tylko http://127.0.0.1 / localhost)
+    with _OPENER.open(req, timeout=timeout) as resp:  # nosec B310
         body = resp.read()
         if resp.status == 202 or not body:
             return None
@@ -89,15 +115,16 @@ def _error_text(exc):
     return str(exc)
 
 
-def _offline_response(message, exc, url):
-    """Odpowiedź generowana lokalnie, gdy QGIS nie odpowiada."""
+def _offline_response(message, detail, url):
+    """Odpowiedź generowana lokalnie, gdy QGIS nie odpowiada (detail – opis błędu z _error_text)."""
     msg_id, method = message.get("id"), message.get("method")
     if msg_id is None:
         return None
     if method == "initialize":
+        # listChanged: po połączeniu z QGIS most wyśle notifications/tools/list_changed (zob. main)
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
             "protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {"listChanged": True}},
-            "serverInfo": {"name": "gis-assistant-ai-qgis", "version": "offline"},
+            "serverInfo": {"name": SERVER_NAME, "version": "offline"},
             "instructions": _t("instructions")}}
     if method == "ping":
         return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
@@ -105,11 +132,20 @@ def _offline_response(message, exc, url):
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": [_offline_tool()]}}
     if method == "tools/call":
         return {"jsonrpc": "2.0", "id": msg_id, "result": {
-            "content": [{"type": "text", "text": _t("offline") % (url, _error_text(exc))}], "isError": True}}
+            "content": [{"type": "text", "text": _t("offline") % (url, detail)}], "isError": True}}
     if method in ("resources/list", "prompts/list"):
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"resources": [], "prompts": []}}
     return {"jsonrpc": "2.0", "id": msg_id,
-            "error": {"code": -32000, "message": "QGIS unavailable: %s" % _error_text(exc)}}
+            "error": {"code": -32000, "message": "QGIS unavailable: %s" % detail}}
+
+
+def _http_error_response(message, status, detail):
+    """QGIS odpowiedział, ale błędem HTTP (np. 400, 404) – błąd JSON-RPC z kodem statusu zamiast „QGIS offline”."""
+    msg_id = message.get("id")
+    if msg_id is None:
+        return None
+    return {"jsonrpc": "2.0", "id": msg_id,
+            "error": {"code": -32000, "message": "QGIS: %s" % detail, "data": {"httpStatus": status}}}
 
 
 def main():
@@ -121,6 +157,8 @@ def main():
     args = ap.parse_args()
     global LANG
     LANG = "pl" if args.lang.lower().startswith("pl") else "en"
+    if not local_url(args.url):
+        ap.error("--url must point to the local QGIS server (http://127.0.0.1:PORT/mcp or http://localhost:PORT/mcp)")
     if not args.token:
         sys.stderr.write("mcp_bridge: missing token (--token or GIS_ASSISTANT_MCP_TOKEN)\n")
     # Windows: stdout w trybie tekstowym zamienia \n na \r\n – MCP tego nie lubi
@@ -129,6 +167,8 @@ def main():
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8")
 
+    advertised = False      # most sam odpowiedział na initialize (listChanged: True)
+    stale = False           # Claude dostał odpowiedź „offline” – po połączeniu lista narzędzi się zmieni
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -142,13 +182,30 @@ def main():
             _reply({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "batch not supported"}})
             continue
         timeout = CALL_TIMEOUT_S if message.get("method") == "tools/call" else OTHER_TIMEOUT_S
+        online = False
         try:
             response = _post(args.url, args.token, message, timeout)
+            online = True
+        except urllib.error.HTTPError as exc:
+            detail = _error_text(exc)
+            sys.stderr.write("mcp_bridge: %s\n" % detail)
+            if exc.code == 401:     # zły token – czytelna instrukcja jak przy braku połączenia
+                response = _offline_response(message, detail, args.url)
+            else:
+                response = _http_error_response(message, exc.code, detail)
+                online = True
         except Exception as exc:  # noqa: BLE001 – każdy błąd połączenia obsługujemy komunikatem dla Claude
-            sys.stderr.write("mcp_bridge: %s\n" % _error_text(exc))
-            response = _offline_response(message, exc, args.url)
+            detail = _error_text(exc)
+            sys.stderr.write("mcp_bridge: %s\n" % detail)
+            response = _offline_response(message, detail, args.url)
+        if not online:
+            stale = True
+            advertised = advertised or message.get("method") == "initialize"
         if response is not None:
             _reply(response)
+        if online and stale and advertised:
+            _reply({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+            stale = False
 
 
 if __name__ == "__main__":

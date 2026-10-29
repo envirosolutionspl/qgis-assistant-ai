@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """Panel „GIS Assistant AI” – linia poleceń, plan działań, WYKONAJ, kroki interaktywne."""
+import time
 import traceback
 from urllib.parse import unquote
 
-from qgis.core import Qgis, QgsMessageLog, QgsProject, QgsVectorLayer, QgsWkbTypes
+from qgis.core import Qgis, QgsMessageLog, QgsProject, QgsRasterLayer, QgsVectorLayer, QgsWkbTypes
 from qgis.gui import QgsDockWidget, QgsMapLayerComboBox
-from qgis.PyQt.QtCore import QEvent, QSize, Qt, QTimer, QUrl, pyqtSignal
+from qgis.PyQt.QtCore import QEvent, QSize, Qt, QTimer, QUrl
 from qgis.PyQt.QtGui import QDesktopServices, QIcon, QPixmap
 from qgis.PyQt.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+    QFrame, QHBoxLayout, QLabel, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -24,7 +25,7 @@ from ..executor import PlanExecutor
 from ..llm_client import LLMClient
 from ..prompts import SYSTEM_PROMPT, revision_message, user_message
 from ..settings import SecretStore, Settings
-from ..utils import is_web_url, md_to_html, python_risks
+from ..utils import is_web_url, md_to_html, public_fields, python_risks
 from . import icons, render, styles
 from .settings_dialog import SettingsDialog
 from .confirm_dialog import ConfirmDialog
@@ -32,10 +33,10 @@ from .widgets import CollapsibleSection, ElidedLabel
 
 
 FOOTER_LOGO_HEIGHT = 36
+PROGRESS_INTERVAL_S = 0.25  # licznik odebranych znaków odświeżamy najwyżej co tyle sekund
 
 
 class GISAssistantAIDock(QgsDockWidget):
-    closingPlugin = pyqtSignal()
 
     def __init__(self, iface, parent=None):
         super().__init__(parent)
@@ -53,17 +54,6 @@ class GISAssistantAIDock(QgsDockWidget):
         self.client.notice.connect(lambda msg: self._log("warning", msg))
 
         self.executor = PlanExecutor(iface, self)
-        self.executor.changed.connect(self._render_response)
-        self.executor.log.connect(self._log)
-        self.executor.statusText.connect(lambda text: self.status.setText(text))   # self.status powstaje w _build_ui
-        self.executor.progress.connect(self._on_progress)
-        self.executor.waitingForUser.connect(self._show_user_panel)
-        self.executor.confirmPython.connect(self._confirm_python)
-        self.executor.confirmLoad.connect(self._confirm_load)
-        self.executor.stepFailed.connect(self._show_error_panel)
-        self.executor.stepWarning.connect(self._show_warning_panel)
-        self.executor.replanRequested.connect(lambda idx: self._request_revision("replan", idx))
-        self.executor.finished.connect(self._on_plan_finished)
 
         self.response = None        # ostatnia odpowiedź modelu (dict)
         self.history = []           # [(polecenie, surowa odpowiedź)]
@@ -77,10 +67,31 @@ class GISAssistantAIDock(QgsDockWidget):
         self._panel_mode = "error"  # panel pod wynikiem: "error" (krok nieudany) | "warning" (wynik podejrzany)
         self._panel_idx = -1
         self._panel_message = ""
+        self._busy_text = ""        # tekst statusu trwającego zapytania do AI ("" – brak zapytania)
+        self._progress_chars = 0    # ostatnia liczba odebranych znaków (odpowiedź strumieniowa)
+        self._progress_shown = 0.0  # time.monotonic() ostatniego odświeżenia licznika
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setSingleShot(True)
+        self._progress_timer.timeout.connect(self._show_llm_progress)
 
         self._build_ui()
+        self._connect_executor()
         self._render_welcome()
         QgsProject.instance().layersAdded.connect(self._on_layers_added)
+
+    def _connect_executor(self):
+        ex = self.executor
+        ex.changed.connect(self._render_response)
+        ex.log.connect(self._log)
+        ex.statusText.connect(self.status.setText)
+        ex.progress.connect(self._on_progress)
+        ex.waitingForUser.connect(self._show_user_panel)
+        ex.confirmPython.connect(self._confirm_python)
+        ex.confirmLoad.connect(self._confirm_load)
+        ex.stepFailed.connect(self._show_error_panel)
+        ex.stepWarning.connect(self._show_warning_panel)
+        ex.replanRequested.connect(lambda idx: self._request_revision("replan", idx))
+        ex.finished.connect(self._on_plan_finished)
 
     # ================================================================== budowa UI
     def _build_ui(self):
@@ -97,8 +108,42 @@ class GISAssistantAIDock(QgsDockWidget):
         b.setContentsMargins(8, 8, 8, 8)
         b.setSpacing(8)
         self._body_layout = b
+        b.addWidget(self._build_command_section())
+        b.addWidget(self._build_status())
+        b.addWidget(self._build_result_section(), 1)
+        b.addLayout(self._build_actions())
+        b.addWidget(self._build_log_section())
+        b.addStretch(0)  # przejmuje wolne miejsce, gdy „Wynik” jest zwinięty
+        self._restore_sections()
 
-        # ---------------------------------------------------------- Polecenie
+        # Gdy panel jest niższy niż jego zawartość, pojawia się suwak – nagłówek i stopka zostają na miejscu,
+        # a przycisk WYKONAJ i Dziennik są zawsze osiągalne.
+        scroll = QScrollArea()
+        scroll.setObjectName("panelScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(body)
+        self._scroll = scroll
+        lay.addWidget(scroll, 1)
+        lay.addWidget(self._build_footer())
+        root.setStyleSheet(styles.stylesheet(self.pal))
+        # przewijamy tylko w pionie – panel nie może być węższy niż jego zawartość
+        body.ensurePolished()
+        scroll.setMinimumWidth(body.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width())
+        self.setWidget(root)
+
+    @staticmethod
+    def _button(text, name, slot, tip=None):
+        btn = QPushButton(text)
+        btn.setObjectName(name)
+        if tip:
+            btn.setToolTip(tip)
+        btn.clicked.connect(slot)
+        return btn
+
+    # ---------------------------------------------------------- Polecenie
+    def _build_command_section(self):
         self.cmd_section = CollapsibleSection(tr("Polecenie"), "cmd", self.pal)
         c = self.cmd_section.body_layout
         self.prompt = QPlainTextEdit()
@@ -129,15 +174,14 @@ class GISAssistantAIDock(QgsDockWidget):
         hint = ElidedLabel(tr("Enter – wyślij, Shift+Enter – nowa linia"))
         hint.setObjectName("hint")
         row.addWidget(hint, 1)
-        self.ask_btn = QPushButton(tr("Analizuj"))
-        self.ask_btn.setObjectName("primary")
+        self.ask_btn = self._button(tr("Analizuj"), "primary", lambda: self._submit())
         self.ask_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ask_btn.clicked.connect(lambda: self._submit())
         row.addWidget(self.ask_btn)
         c.addLayout(row)
-        b.addWidget(self.cmd_section)
+        return self.cmd_section
 
-        # ---------------------------------------------------------- status
+    # ---------------------------------------------------------- status
+    def _build_status(self):
         status_box = QWidget()
         sv = QVBoxLayout(status_box)
         sv.setContentsMargins(2, 0, 2, 0)
@@ -153,9 +197,10 @@ class GISAssistantAIDock(QgsDockWidget):
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
         sv.addWidget(self.status)
-        b.addWidget(status_box)
+        return status_box
 
-        # ---------------------------------------------------------- Wynik
+    # ---------------------------------------------------------- Wynik
+    def _build_result_section(self):
         self.res_section = CollapsibleSection(tr("Wynik"), "res", self.pal)
         self.details_btn = QToolButton()
         self.details_btn.setObjectName("linkButton")
@@ -176,26 +221,24 @@ class GISAssistantAIDock(QgsDockWidget):
         r.addWidget(self.result, 1)
         r.addWidget(self._build_user_panel())
         r.addWidget(self._build_error_panel())
-        b.addWidget(self.res_section, 1)
+        return self.res_section
 
-        # ---------------------------------------------------------- WYKONAJ
+    # ---------------------------------------------------------- WYKONAJ
+    def _build_actions(self):
         act = QHBoxLayout()
         act.setSpacing(8)
-        self.exec_btn = QPushButton(tr("WYKONAJ"))
-        self.exec_btn.setObjectName("execute")
+        self.exec_btn = self._button(tr("WYKONAJ"), "execute", self._execute,
+                                     tr("Wykonaj plan działań krok po kroku"))
         self.exec_btn.setEnabled(False)
         self.exec_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.exec_btn.setToolTip(tr("Wykonaj plan działań krok po kroku"))
-        self.exec_btn.clicked.connect(self._execute)
         act.addWidget(self.exec_btn, 1)
-        self.stop_btn = QPushButton(tr("Zatrzymaj"))
-        self.stop_btn.setObjectName("danger")
+        self.stop_btn = self._button(tr("Zatrzymaj"), "danger", self._stop)
         self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self._stop)
         act.addWidget(self.stop_btn)
-        b.addLayout(act)
+        return act
 
-        # ---------------------------------------------------------- Dziennik
+    # ---------------------------------------------------------- Dziennik
+    def _build_log_section(self):
         self.log_section = CollapsibleSection(tr("Dziennik"), "log", self.pal)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("log")
@@ -204,33 +247,16 @@ class GISAssistantAIDock(QgsDockWidget):
         self.log_view.setMaximumBlockCount(500)
         self.log_section.body_layout.setContentsMargins(4, 4, 4, 4)
         self.log_section.body_layout.addWidget(self.log_view)
-        b.addWidget(self.log_section)
-        b.addStretch(0)  # przejmuje wolne miejsce, gdy „Wynik” jest zwinięty
+        return self.log_section
 
-        # stan zwinięcia sekcji jest zapamiętywany
+    def _restore_sections(self):
+        """Stan zwinięcia sekcji jest zapamiętywany."""
         for key, sec, default in (("cmd", self.cmd_section, True), ("res", self.res_section, True),
                                   ("log", self.log_section, False)):
             sec.setExpanded(self.settings.value("ui/section_" + key, default, bool))
             sec.toggled.connect(lambda on, k=key: self.settings.set_value("ui/section_" + k, on))
         self.res_section.toggled.connect(self._update_stretch)
         self._update_stretch()
-
-        # Gdy panel jest niższy niż jego zawartość, pojawia się suwak – nagłówek i stopka zostają na miejscu,
-        # a przycisk WYKONAJ i Dziennik są zawsze osiągalne.
-        scroll = QScrollArea()
-        scroll.setObjectName("panelScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(body)
-        self._scroll = scroll
-        lay.addWidget(scroll, 1)
-        lay.addWidget(self._build_footer())
-        root.setStyleSheet(styles.stylesheet(self.pal))
-        # przewijamy tylko w pionie – panel nie może być węższy niż jego zawartość
-        body.ensurePolished()
-        scroll.setMinimumWidth(body.minimumSizeHint().width() + scroll.verticalScrollBar().sizeHint().width())
-        self.setWidget(root)
 
     def _update_stretch(self, *_):
         b = self._body_layout
@@ -264,8 +290,10 @@ class GISAssistantAIDock(QgsDockWidget):
         texts.addWidget(title)
         texts.addWidget(sub)
         h.addLayout(texts, 1)
-        h.addWidget(self._icon_button("chat", tr("Nowe polecenie"), self._new_conversation))
-        h.addWidget(self._icon_button("sliders", tr("Ustawienia"), self._open_settings))
+        color = self.pal["primary_text"] if self.pal is styles.DARK else self.pal["primary"]
+        h.addWidget(self._icon_button(icons.tinted_icon(CHAT_ICON_PATH, color, 18), tr("Nowe polecenie"),
+                                      self._new_conversation))
+        h.addWidget(self._icon_button(icons.icon("sliders", color, 18), tr("Ustawienia"), self._open_settings))
         return header
 
     @staticmethod
@@ -276,14 +304,11 @@ class GISAssistantAIDock(QgsDockWidget):
         px.setDevicePixelRatio(ratio)
         return px
 
-    def _icon_button(self, name, tip, slot):
+    @staticmethod
+    def _icon_button(icon, tip, slot):
         btn = QToolButton()
         btn.setObjectName("iconButton")
-        color = self.pal["primary_text"] if self.pal is styles.DARK else self.pal["primary"]
-        if name == "chat":
-            btn.setIcon(icons.tinted_icon(CHAT_ICON_PATH, color, 18))
-        else:
-            btn.setIcon(icons.icon(name, color, 18))
+        btn.setIcon(icon)
         btn.setIconSize(icons.qsize(18))
         btn.setToolTip(tip)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -321,28 +346,21 @@ class GISAssistantAIDock(QgsDockWidget):
         v.addWidget(self.layer_row)
 
         helpers = QHBoxLayout()
-        self.help_plugin = QPushButton(tr("↗ Strona wtyczki"))
-        self.help_dsm = QPushButton(tr("Menedżer źródeł danych"))
-        self.help_alg = QPushButton(tr("Otwórz narzędzie"))
+        self.help_plugin = self._button(tr("↗ Strona wtyczki"), "secondary",
+                                        lambda: self._open_url(self._user_step().get("plugin_url", "")))
+        self.help_dsm = self._button(tr("Menedżer źródeł danych"), "secondary",
+                                     lambda: self._open_dsm(self._user_step().get("dsm_page", "")))
+        self.help_alg = self._button(tr("Otwórz narzędzie"), "secondary",
+                                     lambda: self._open_alg(self._user_step().get("algorithm_id", "")))
         for w in (self.help_plugin, self.help_dsm, self.help_alg):
-            w.setObjectName("secondary")
             helpers.addWidget(w)
         helpers.addStretch(1)
-        self.help_plugin.clicked.connect(lambda: self._open_url(self._user_step().get("plugin_url", "")))
-        self.help_dsm.clicked.connect(lambda: self._open_dsm(self._user_step().get("dsm_page", "")))
-        self.help_alg.clicked.connect(lambda: self._open_alg(self._user_step().get("algorithm_id", "")))
         v.addLayout(helpers)
 
         btns = QHBoxLayout()
-        self.user_ok = QPushButton(tr("Wykonałem – kontynuuj"))
-        self.user_ok.setObjectName("primary")
-        self.user_ok.clicked.connect(self._user_continue)
-        user_skip = QPushButton(tr("Pomiń krok"))
-        user_skip.setObjectName("secondary")
-        user_skip.clicked.connect(lambda: (self.user_panel.hide(), self.executor.skip()))
-        user_abort = QPushButton(tr("Przerwij"))
-        user_abort.setObjectName("danger")
-        user_abort.clicked.connect(self._stop)
+        self.user_ok = self._button(tr("Wykonałem – kontynuuj"), "primary", self._user_continue)
+        user_skip = self._button(tr("Pomiń krok"), "secondary", lambda: (self.user_panel.hide(), self.executor.skip()))
+        user_abort = self._button(tr("Przerwij"), "danger", self._stop)
         btns.addWidget(self.user_ok, 1)
         btns.addWidget(user_skip)
         btns.addWidget(user_abort)
@@ -364,23 +382,13 @@ class GISAssistantAIDock(QgsDockWidget):
         self.error_msg.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         v.addWidget(self.error_msg)
         btns = QHBoxLayout()
-        fix = QPushButton(tr("Napraw z AI"))
-        fix.setObjectName("primary")
-        fix.setToolTip(tr("Asystent przeanalizuje błąd i poprawi pozostałe kroki planu"))
-        fix.clicked.connect(self._fix_with_ai)
-        retry = QPushButton(tr("Ponów"))
-        retry.setObjectName("secondary")
-        retry.clicked.connect(lambda: (self.error_panel.hide(), self.executor.retry()))
-        skip = QPushButton(tr("Pomiń"))
-        skip.setObjectName("secondary")
-        skip.clicked.connect(lambda: (self.error_panel.hide(), self.executor.skip()))
-        cont = QPushButton(tr("Kontynuuj mimo to"))
-        cont.setObjectName("secondary")
-        cont.setToolTip(tr("Wynik jest prawidłowy (np. w obszarze naprawdę nie ma obiektów) – wykonaj dalsze kroki"))
-        cont.clicked.connect(self._continue_after_warning)
-        abort = QPushButton(tr("Przerwij"))
-        abort.setObjectName("danger")
-        abort.clicked.connect(self._stop)
+        fix = self._button(tr("Napraw z AI"), "primary", self._fix_with_ai,
+                           tr("Asystent przeanalizuje błąd i poprawi pozostałe kroki planu"))
+        retry = self._button(tr("Ponów"), "secondary", lambda: (self.error_panel.hide(), self.executor.retry()))
+        skip = self._button(tr("Pomiń"), "secondary", lambda: (self.error_panel.hide(), self.executor.skip()))
+        cont = self._button(tr("Kontynuuj mimo to"), "secondary", self._continue_after_warning, tr(
+            "Wynik jest prawidłowy (np. w obszarze naprawdę nie ma obiektów) – wykonaj dalsze kroki"))
+        abort = self._button(tr("Przerwij"), "danger", self._stop)
         self._err_retry, self._err_skip, self._err_continue = retry, skip, cont
         for w in (fix, retry, skip, cont, abort):
             btns.addWidget(w)
@@ -437,10 +445,6 @@ class GISAssistantAIDock(QgsDockWidget):
         super().showEvent(event)
         self.prompt.setFocus()
 
-    def closeEvent(self, event):  # noqa: N802
-        self.closingPlugin.emit()
-        event.accept()
-
     def cleanup(self):
         try:
             QgsProject.instance().layersAdded.disconnect(self._on_layers_added)
@@ -474,6 +478,8 @@ class GISAssistantAIDock(QgsDockWidget):
                                                 tr("Trwa wykonywanie planu – zatrzymaj je, aby zadać nowe pytanie."),
                                                 level=Qgis.MessageLevel.Info, duration=4)
             return
+        if self._purpose is not None:  # trwa zapytanie do AI (Enter omija wyłączony przycisk „Analizuj”)
+            return
         cfg = self._config_or_prompt()
         if cfg is None:
             return
@@ -485,8 +491,7 @@ class GISAssistantAIDock(QgsDockWidget):
         self.response = None
         self.exec_btn.setEnabled(False)
         self.exec_btn.setText(tr("WYKONAJ"))
-        self.user_panel.hide()
-        self.error_panel.hide()
+        self._hide_panels()
         self.result.setHtml(render.thinking(self.pal, display or query))
         self._set_busy(True, tr("Analizuję polecenie i projekt…"))
         self._log("info", tr("Polecenie: %s") % (display or query))
@@ -499,17 +504,21 @@ class GISAssistantAIDock(QgsDockWidget):
             msgs.append({"role": "assistant", "content": raw[:5000]})
         return msgs
 
-    def _on_llm_text(self, text):
+    def _take_purpose(self):
+        """Cel zakończonego zapytania do AI; zapytanie przestaje być „w toku”."""
         purpose, data = self._purpose or ("query", "")
         self._purpose = None
+        return purpose, data
+
+    def _on_llm_text(self, text):
+        purpose, data = self._take_purpose()
         self._set_busy(False)
         if purpose == "query":
             self._handle_query_response(data, text)
         else:
             self._handle_revision(purpose, data, text)
             if self.executor.running and not self.error_panel.isVisibleTo(self):
-                self.busy.setRange(0, 0)
-                self.status.setText(tr("Wykonuję plan…"))
+                self._show_running_status()
 
     def _handle_query_response(self, query, text):
         self._reveal_result()
@@ -542,8 +551,7 @@ class GISAssistantAIDock(QgsDockWidget):
 
     def _on_llm_error(self, message):
         self._reveal_result()
-        purpose, data = self._purpose or ("query", "")
-        self._purpose = None
+        purpose, _ = self._take_purpose()
         self._set_busy(False)
         self._log("error", message)
         if purpose == "query":
@@ -552,13 +560,18 @@ class GISAssistantAIDock(QgsDockWidget):
         elif purpose == "replan":
             self._log("warning", tr("Nie udało się dopasować planu – kontynuuję bez zmian."))
             self.executor.continue_plan()
-        elif self._panel_mode == "warning" and 0 <= self._panel_idx < len(self.executor.steps):
-            self._show_warning_panel(self._panel_idx, "%s\n\n%s" % (
-                self._panel_message, tr("Korekta przez AI nie powiodła się: %s") % message))
         else:
-            self._show_error_panel(self.executor.idx, tr("Korekta przez AI nie powiodła się: %s") % message)
+            self._revision_failed(tr("Korekta przez AI nie powiodła się: %s") % message)
 
     # ------------------------------------------------------------------ korekta planu
+    def _revision_failed(self, text, error_text=None):
+        """Korekta „repair” się nie udała – wracamy do panelu ostrzeżenia (tekst dopisany do pierwotnego
+        komunikatu) albo panelu błędu (error_text, domyślnie sam tekst)."""
+        if self._panel_mode == "warning" and 0 <= self._panel_idx < len(self.executor.steps):
+            self._show_warning_panel(self._panel_idx, "%s\n\n%s" % (self._panel_message, text))
+        else:
+            self._show_error_panel(self.executor.idx, text if error_text is None else error_text)
+
     def _fix_with_ai(self):
         if self._panel_mode == "warning":
             step = self.executor.steps[self._panel_idx]
@@ -569,50 +582,24 @@ class GISAssistantAIDock(QgsDockWidget):
 
     def _continue_after_warning(self):
         self.error_panel.hide()
-        self.busy.setRange(0, 0)
-        self.status.setText(tr("Wykonuję plan…"))
+        self._show_running_status()
         self.executor.continue_plan()
 
     def _request_revision(self, purpose, idx, reason=None):
         cfg = self._config_or_prompt()
-        steps = self.executor.steps
         if cfg is None or self.response is None:
             if purpose == "replan":
                 self.executor.continue_plan()
             return
         if purpose == "replan":
             from_idx = idx + 1
-            if from_idx >= len(steps):
+            if from_idx >= len(self.executor.steps):
                 self.executor.continue_plan()
                 return
-            step = steps[idx]
-            res = self.executor.results.get(step["id"], {})
-            lyr = QgsProject.instance().mapLayer(res.get("OUTPUT", "")) if res.get("OUTPUT") else None
-            who = "Użytkownik wykonał" if step.get("action") == "user_action" else "Wtyczka wykonała"
-            reason = "%s krok „%s”%s. Dopasuj dalsze kroki do rzeczywistych danych " \
-                     "(nazwy pól, typ geometrii, układ współrzędnych)." % (
-                         who, step["title"],
-                         " – warstwa wynikowa „%s” (id: %s)" % (lyr.name(), lyr.id()) if lyr else "")
-            extra = ""
-            if lyr is not None:
-                extra = "Opis wskazanej warstwy: %s" % context_json(layer_info(
-                    lyr, True, self.settings.value("send_samples", False, bool)))
-            status = tr("Dopasowuję dalsze kroki do wczytanych danych…")
+            reason, extra, status = self._replan_payload(idx)
         else:
             from_idx = idx
-            step = steps[idx]
-            if reason is None:
-                reason = "Krok „%s” (id %s) zakończył się błędem: %s" % (
-                    step["title"], step["id"], step.get("_error", ""))
-                extra = "Kod nieudanego kroku: %s" % context_json(
-                    {k: v for k, v in step.items() if not k.startswith("_")})
-                status = tr("Analizuję błąd i poprawiam plan…")
-            else:
-                # wynik podejrzany: krok wykonano, ale dał np. pusty wynik – poprawiamy od tego kroku
-                extra = "Kod kroku z podejrzanym wynikiem: %s\nWynik kroku: %s" % (
-                    context_json({k: v for k, v in step.items() if not k.startswith("_")}),
-                    context_json(self.executor.done_summary()[-1:] if step.get("_status") == "done" else []))
-                status = tr("Szukam przyczyny podejrzanego wyniku i poprawiam plan…")
+            reason, extra, status = self._repair_payload(idx, reason)
         ctx = context_json(build_context(self.iface, self.settings))
         messages = [
             {"role": "user", "content": user_message(self._last_query, self._plan_ctx, language_label())},
@@ -627,6 +614,35 @@ class GISAssistantAIDock(QgsDockWidget):
         self._log("info", status)
         self.client.request(SYSTEM_PROMPT, messages, cfg)
 
+    def _replan_payload(self, idx):
+        """(powód, dodatkowy kontekst, status) – dopasowanie dalszych kroków po kroku idx."""
+        step = self.executor.steps[idx]
+        res = self.executor.results.get(step["id"], {})
+        lyr = QgsProject.instance().mapLayer(res.get("OUTPUT", "")) if res.get("OUTPUT") else None
+        who = "Użytkownik wykonał" if step.get("action") == "user_action" else "Wtyczka wykonała"
+        reason = "%s krok „%s”%s. Dopasuj dalsze kroki do rzeczywistych danych " \
+                 "(nazwy pól, typ geometrii, układ współrzędnych)." % (
+                     who, step["title"],
+                     " – warstwa wynikowa „%s” (id: %s)" % (lyr.name(), lyr.id()) if lyr else "")
+        extra = ""
+        if lyr is not None:
+            extra = "Opis wskazanej warstwy: %s" % context_json(layer_info(
+                lyr, True, self.settings.value("send_samples", False, bool)))
+        return reason, extra, tr("Dopasowuję dalsze kroki do wczytanych danych…")
+
+    def _repair_payload(self, idx, reason=None):
+        """(powód, dodatkowy kontekst, status) – poprawa planu od kroku idx (błąd albo podejrzany wynik)."""
+        step = self.executor.steps[idx]
+        code = context_json(public_fields(step))
+        if reason is None:
+            reason = "Krok „%s” (id %s) zakończył się błędem: %s" % (
+                step["title"], step["id"], step.get("_error", ""))
+            return reason, "Kod nieudanego kroku: %s" % code, tr("Analizuję błąd i poprawiam plan…")
+        # wynik podejrzany: krok wykonano, ale dał np. pusty wynik – poprawiamy od tego kroku
+        extra = "Kod kroku z podejrzanym wynikiem: %s\nWynik kroku: %s" % (
+            code, context_json(self.executor.done_summary()[-1:] if step.get("_status") == "done" else []))
+        return reason, extra, tr("Szukam przyczyny podejrzanego wyniku i poprawiam plan…")
+
     def _handle_revision(self, purpose, from_idx, text):
         try:
             rev = plan_model.parse_response(text)
@@ -637,23 +653,17 @@ class GISAssistantAIDock(QgsDockWidget):
             self._log("error", tr("Nie udało się odczytać korekty planu: %s") % e)
             if purpose == "replan":
                 self.executor.continue_plan()
-            elif self._panel_mode == "warning":
-                self._show_warning_panel(self._panel_idx, "%s\n\n%s" % (
-                    self._panel_message, tr("Nie udało się odczytać korekty: %s") % e))
             else:
-                self._show_error_panel(self.executor.idx, tr("Nie udało się odczytać korekty: %s") % e)
+                self._revision_failed(tr("Nie udało się odczytać korekty: %s") % e)
             return
         if not steps:
             if purpose == "replan":
                 self._log("info", tr("AI potwierdziło, że dalsze kroki nie wymagają zmian."))
                 self.executor.continue_plan()
-            elif self._panel_mode == "warning":
-                self._show_warning_panel(self._panel_idx, "%s\n\n%s" % (
-                    self._panel_message, rev.get("note") or tr("AI nie zaproponowało poprawionych kroków.")))
             else:
+                note = rev.get("note") or tr("AI nie zaproponowało poprawionych kroków.")
                 # np. chwilowa awaria serwera – AI wyjaśnia w „note”, że wystarczy ponowić krok później
-                self._show_error_panel(self.executor.idx, "%s\n\n%s" % (
-                    rev.get("note") or tr("AI nie zaproponowało poprawionych kroków."), self._panel_message))
+                self._revision_failed(note, "%s\n\n%s" % (note, self._panel_message))
             return
         self._plan_note = rev.get("note") or (
             tr("Plan dopasowany do danych.") if purpose == "replan" else tr("Plan poprawiony."))
@@ -675,8 +685,7 @@ class GISAssistantAIDock(QgsDockWidget):
     def _stop(self):
         self.client.abort()
         self._purpose = None
-        self.user_panel.hide()
-        self.error_panel.hide()
+        self._hide_panels()
         self.executor.abort()
         self._set_busy(False)
         self._set_running(False)
@@ -687,11 +696,14 @@ class GISAssistantAIDock(QgsDockWidget):
         self.stop_btn.setEnabled(running)
         self.ask_btn.setEnabled(not running)
         if running:
-            self.busy.setRange(0, 0)
-            self.status.setText(tr("Wykonuję plan…"))
+            self._show_running_status()
         else:
             self.busy.setRange(0, 1)
             self.busy.setValue(0)
+
+    def _show_running_status(self):
+        self.busy.setRange(0, 0)
+        self.status.setText(tr("Wykonuję plan…"))
 
     def _on_progress(self, value):
         if self.busy.maximum() != 100:
@@ -700,8 +712,7 @@ class GISAssistantAIDock(QgsDockWidget):
 
     def _on_plan_finished(self, ok):
         self._set_running(False)
-        self.user_panel.hide()
-        self.error_panel.hide()
+        self._hide_panels()
         if ok:
             self.status.setText(tr("✔ Plan wykonany."))
             self.iface.messageBar().pushMessage(PLUGIN_NAME, tr("Plan „%s” został wykonany.") % (
@@ -757,6 +768,8 @@ class GISAssistantAIDock(QgsDockWidget):
         g = str(geometry or "any").lower()
         if g in ("any", "", "none"):
             return active
+        if g == "raster":
+            return active if isinstance(active, QgsRasterLayer) else None
         if isinstance(active, QgsVectorLayer):
             gt = QgsWkbTypes.displayString(active.wkbType()).lower()
             if (g == "polygon" and "polygon" in gt) or (g == "line" and "line" in gt) or \
@@ -783,40 +796,45 @@ class GISAssistantAIDock(QgsDockWidget):
         self.executor.user_done(layer)
 
     def _show_error_panel(self, idx, message):
-        self._reveal_result()
-        self._panel_mode, self._panel_idx, self._panel_message = "error", idx, message
-        step = self.executor.steps[idx] if 0 <= idx < len(self.executor.steps) else {"title": ""}
-        self.user_panel.hide()
-        self.error_title.setStyleSheet("color:%s;" % self.pal["error"])
-        self.error_title.setText(tr("✖  Krok %d nie powiódł się: %s") % (idx + 1, step.get("title", "")))
-        self.error_msg.setText(message[:900])
-        self._err_retry.show()
-        self._err_skip.show()
-        self._err_continue.hide()
-        self.error_panel.show()
-        self._scroll_to(self.error_panel)
-        self.busy.setRange(0, 1)
-        self.status.setText(tr("Wybierz, co zrobić z błędem."))
+        self._show_step_panel("error", idx, message, tr("✖  Krok %d nie powiódł się: %s"), message[:900],
+                              tr("Wybierz, co zrobić z błędem."))
 
     def _show_warning_panel(self, idx, message):
         """Wynik kroku podejrzany (np. pusty z niepustych danych) – jak w geoportalu: plan czeka na decyzję."""
-        self._reveal_result()
-        self._panel_mode, self._panel_idx, self._panel_message = "warning", idx, message
-        step = self.executor.steps[idx] if 0 <= idx < len(self.executor.steps) else {"title": ""}
-        self.user_panel.hide()
-        self.error_title.setStyleSheet("color:%s;" % self.pal["warn"])
-        self.error_title.setText(tr("⚠  Wynik kroku %d wymaga sprawdzenia: %s") % (idx + 1, step.get("title", "")))
-        self.error_msg.setText("%s\n\n%s" % (message[:1200], tr(
-            "Asystent może sam znaleźć przyczynę i poprawić plan. Jeśli taki wynik jest prawidłowy, kontynuuj.")))
-        self._err_retry.hide()
-        self._err_skip.hide()
         more = idx + 1 < len(self.executor.steps)
         self._err_continue.setText(tr("Kontynuuj mimo to") if more else tr("Zakończ"))
-        self._err_continue.show()
+        self._show_step_panel("warning", idx, message, tr("⚠  Wynik kroku %d wymaga sprawdzenia: %s"),
+                              "%s\n\n%s" % (message[:1200], tr(
+                                  "Asystent może sam znaleźć przyczynę i poprawić plan. "
+                                  "Jeśli taki wynik jest prawidłowy, kontynuuj.")),
+                              tr("Sprawdź wynik kroku i wybierz, co dalej."))
+
+    def _show_step_panel(self, mode, idx, message, title, text, status):
+        """Panel pod wynikiem: mode „error” (krok nieudany) lub „warning” (wynik podejrzany).
+        title – szablon z %d (numer kroku) i %s (tytuł kroku)."""
+        self._reveal_result()
+        self._panel_mode, self._panel_idx, self._panel_message = mode, idx, message
+        step = self.executor.steps[idx] if 0 <= idx < len(self.executor.steps) else {"title": ""}
+        warning = mode == "warning"
+        self.user_panel.hide()
+        self.error_title.setStyleSheet("color:%s;" % self.pal["warn" if warning else "error"])
+        self.error_title.setText(title % (idx + 1, step.get("title", "")))
+        self.error_msg.setText(text)
+        self._err_retry.setVisible(not warning)
+        self._err_skip.setVisible(not warning)
+        self._err_continue.setVisible(warning)
         self.error_panel.show()
         self._scroll_to(self.error_panel)
         self.busy.setRange(0, 1)
-        self.status.setText(tr("Sprawdź wynik kroku i wybierz, co dalej."))
+        self.status.setText(status)
+
+    @staticmethod
+    def _confirmed(dlg):
+        """Okno zatwierdzenia; po zamknięciu usuwane – inaczej zostaje dzieckiem panelu do końca sesji."""
+        try:
+            return bool(dlg.exec())
+        finally:
+            dlg.deleteLater()
 
     def _confirm_python(self, idx):
         step = self.executor.steps[idx]
@@ -828,7 +846,7 @@ class GISAssistantAIDock(QgsDockWidget):
         dlg = ConfirmDialog(self, tr("kod PyQGIS"),
                             tr("Krok „%s” chce wykonać poniższy kod Python. Sprawdź go przed zatwierdzeniem.")
                             % step["title"], code, python_risks(code), tr("Wykonaj kod"))
-        self.executor.run_python(dlg.exec() == QDialog.DialogCode.Accepted)
+        self.executor.run_python(self._confirmed(dlg))
 
     def _confirm_load(self, idx, source):
         step = self.executor.steps[idx]
@@ -836,7 +854,7 @@ class GISAssistantAIDock(QgsDockWidget):
                             tr("Krok „%s” chce wczytać do projektu plik lub bazę danych wskazane przez AI. "
                                "Zatwierdź tylko, jeśli znasz to źródło.") % step["title"], source, (),
                             tr("Wczytaj"))
-        self.executor.confirm_load(dlg.exec() == QDialog.DialogCode.Accepted)
+        self.executor.confirm_load(self._confirmed(dlg))
 
     # ================================================================== render
     def _render_welcome(self):
@@ -894,10 +912,15 @@ class GISAssistantAIDock(QgsDockWidget):
         elif cmd.startswith("answer:"):
             self._answer_clarify(cmd[len("answer:"):])
 
-    def _answer_clarify(self, option):
+    def _answer_clarify(self, index):
         """Odpowiedź na pytanie asystenta – jak w geoportalu: wybór jest wiążący i trafia do modelu razem
-        z pytaniem i pierwotnym poleceniem (model wykonuje polecenie bez ponownego pytania)."""
+        z pytaniem i pierwotnym poleceniem (model wykonuje polecenie bez ponownego pytania).
+        index – numer opcji w response["options"] (link action:answer:<n> z render.clarify)."""
         r = self.response or {}
+        try:
+            option = str((r.get("options") or [])[int(index)])
+        except (ValueError, IndexError, TypeError):
+            return
         question = " ".join(str(r.get("question") or "").split())[:300]
         original = self._last_query or ""
         query = "Wybór użytkownika (odpowiedź na pytanie „%s”): %s" % (question, option)
@@ -919,7 +942,12 @@ class GISAssistantAIDock(QgsDockWidget):
     def _open_alg(self, alg_id):
         if not alg_id:
             return
-        import processing
+        try:
+            import processing
+        except ImportError as e:  # wtyczka Processing wyłączona
+            self.iface.messageBar().pushMessage(PLUGIN_NAME, tr("Nie można otworzyć %s: %s") % (alg_id, e),
+                                                level=Qgis.MessageLevel.Warning, duration=5)
+            return
         try:
             dlg = processing.createAlgorithmDialog(alg_id, {})
             if dlg:
@@ -944,8 +972,10 @@ class GISAssistantAIDock(QgsDockWidget):
 
     def _open_settings(self):
         dlg = SettingsDialog(self.settings, self)
-        if dlg.exec():
-            where = dlg.property("key_storage_info")
+        accepted = dlg.exec()
+        where = dlg.property("key_storage_info")
+        dlg.deleteLater()  # okno (z własnym LLMClient) nie zostaje dzieckiem panelu do końca sesji
+        if accepted:
             if where:
                 self.iface.messageBar().pushMessage(PLUGIN_NAME, tr("Klucz API zapisany: %s.") % where,
                                                     level=Qgis.MessageLevel.Info, duration=5)
@@ -955,16 +985,23 @@ class GISAssistantAIDock(QgsDockWidget):
     def _new_conversation(self):
         if self.executor.running:
             return
+        # odpowiedź na wcześniejsze zapytanie nie może nadpisać ekranu powitalnego
+        self.client.abort()
+        self._purpose = None
+        self._set_busy(False)
         self.history.clear()
         self.response = None
         self.exec_btn.setEnabled(False)
-        self.user_panel.hide()
-        self.error_panel.hide()
+        self._hide_panels()
         self.status.setText(tr("Nowe polecenie."))
         self._render_welcome()
         self.prompt.setFocus()
 
     # ================================================================== pomocnicze
+    def _hide_panels(self):
+        self.user_panel.hide()
+        self.error_panel.hide()
+
     def _set_busy(self, busy, text=""):
         self.busy.setRange(0, 0 if busy else 1)
         if not busy:
@@ -973,15 +1010,30 @@ class GISAssistantAIDock(QgsDockWidget):
         if text or busy:
             self.status.setText(text)
         self._busy_text = text if busy else ""
+        self._progress_chars = 0
+        self._progress_timer.stop()
 
     def _on_llm_searching(self, query):
         self._log("info", tr("Wyszukiwanie w internecie: %s") % query)
-        if getattr(self, "_busy_text", ""):
+        if self._busy_text:
             self.status.setText(tr("Szukam w internecie: %s") % query[:80])
 
     def _on_llm_progress(self, chars):
-        if chars and getattr(self, "_busy_text", ""):
-            self.status.setText("%s %s" % (self._busy_text, tr("(odebrano znaków: %d)") % chars))
+        self._progress_chars = chars
+        if not chars or not self._busy_text:
+            return
+        wait = PROGRESS_INTERVAL_S - (time.monotonic() - self._progress_shown)
+        if wait <= 0:
+            self._show_llm_progress()
+        elif not self._progress_timer.isActive():
+            # ostatnia wartość trafi na ekran także wtedy, gdy kolejne fragmenty już nie nadejdą
+            self._progress_timer.start(int(wait * 1000) + 1)
+
+    def _show_llm_progress(self):
+        self._progress_timer.stop()
+        if self._progress_chars and self._busy_text:
+            self._progress_shown = time.monotonic()
+            self.status.setText("%s %s" % (self._busy_text, tr("(odebrano znaków: %d)") % self._progress_chars))
 
     def _log(self, level, message):
         prefix = {"error": "✖", "warning": "⚠", "success": "✔", "debug": "·"}.get(level, "›")

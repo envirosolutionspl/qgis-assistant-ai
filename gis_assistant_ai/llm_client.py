@@ -17,7 +17,7 @@ from qgis.core import QgsNetworkAccessManager
 from qgis.PyQt.QtCore import QByteArray, QObject, QTimer, QUrl, pyqtSignal
 from qgis.PyQt.QtNetwork import QNetworkReply, QNetworkRequest
 
-from .constants import LLM_MAX_CONTINUATIONS
+from .constants import LLM_MAX_CONTINUATIONS, OLLAMA_TEMPERATURE
 from .stream import StreamParser
 from .utils import redact_key
 from .i18n import tr
@@ -57,10 +57,12 @@ class LLMClient(QObject):
         self._config = None
         self._request_args = None
         self._fixes = set()
-
-    @property
-    def busy(self):
-        return self._reply is not None
+        self._continuations = 0
+        self._prior_text = ""        # tekst z wcześniejszych części tury (przed „pause_turn”)
+        self._turn_messages = []
+        self._raw = bytearray()
+        self._streamed = False
+        self._parser = None          # StreamParser bieżącego zapytania
 
     @staticmethod
     def web_search_available(cfg):
@@ -87,7 +89,7 @@ class LLMClient(QObject):
     def _restart(self):
         """Zapytanie od początku (pierwsze albo ponowione po poprawce parametrów)."""
         self._continuations = 0
-        self._prior_text = ""        # tekst z wcześniejszych części tury (przed „pause_turn”)
+        self._prior_text = ""
         self._turn_messages = list(self._request_args[1])
         self._send()
 
@@ -110,18 +112,16 @@ class LLMClient(QObject):
         req.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
         for k, v in headers.items():
             req.setRawHeader(k.encode("ascii"), v.encode("utf-8"))
-        try:
-            # limit bezczynności – przy strumieniowaniu każdy fragment odpowiedzi go odnawia
-            req.setTransferTimeout(int(config.get("timeout_s", 120)) * 1000)
-        except AttributeError:
-            pass
+        timeout_ms = int(config.get("timeout_s", 120)) * 1000
+        # limit bezczynności – przy strumieniowaniu każdy fragment odpowiedzi go odnawia
+        req.setTransferTimeout(timeout_ms)
         self._raw = bytearray()
         self._streamed = False
         self._parser = StreamParser(provider)   # tekst, bloki (wznowienie tury), wyszukiwania, stop_reason
         payload = QByteArray(json.dumps(body, ensure_ascii=False).encode("utf-8"))
         reply = QgsNetworkAccessManager.instance().post(req, payload)
         self._reply = reply
-        _extend_qgis_timeout(reply, int(config.get("timeout_s", 120)) * 1000)
+        _extend_qgis_timeout(reply, timeout_ms)
         # obiekt reply przekazujemy jawnie – odpowiedź z przerwanego zapytania nie pomyli się z nową
         reply.readyRead.connect(lambda r=reply: self._on_ready(r))
         reply.finished.connect(lambda r=reply: self._on_finished(r))
@@ -142,10 +142,14 @@ class LLMClient(QObject):
         return LLMClient._model_key(cfg) not in LLMClient._no_stream
 
     @staticmethod
+    def _max_tokens(cfg):
+        return int(cfg.get("max_tokens", 4096))
+
+    @staticmethod
     def _build_anthropic(system, messages, cfg):
         body = {
             "model": cfg["model"],
-            "max_tokens": int(cfg.get("max_tokens", 4096)),
+            "max_tokens": LLMClient._max_tokens(cfg),
             # długi prompt systemowy w pamięci podręcznej API – kolejne zapytania są tańsze i szybsze
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": messages,
@@ -167,7 +171,7 @@ class LLMClient(QObject):
             else "max_tokens"
         body = {
             "model": cfg["model"],
-            tokens_key: int(cfg.get("max_tokens", 4096)),
+            tokens_key: LLMClient._max_tokens(cfg),
             "messages": [{"role": "system", "content": system}] + messages,
         }
         if LLMClient._stream(cfg):
@@ -180,12 +184,13 @@ class LLMClient(QObject):
 
     @staticmethod
     def _build_ollama(system, messages, cfg):
+        temperature = cfg.get("temperature")
         body = {
             "model": cfg["model"],
             "stream": LLMClient._stream(cfg),
             "format": "json",
-            "options": {"temperature": float(cfg.get("temperature") if cfg.get("temperature") is not None else 0.2),
-                        "num_predict": int(cfg.get("max_tokens", 4096))},
+            "options": {"temperature": float(temperature if temperature is not None else OLLAMA_TEMPERATURE),
+                        "num_predict": LLMClient._max_tokens(cfg)},
             "messages": [{"role": "system", "content": system}] + messages,
         }
         return cfg["endpoint"], {}, body
@@ -238,7 +243,7 @@ class LLMClient(QObject):
                 self.failed.emit(redact_key(self._error_message(reply, status, detail), secret))
                 return
             if self._parser.error:
-                self.failed.emit(redact_key(tr("Błąd API%s: %s%s") % ("", self._parser.error, ""), secret))
+                self.failed.emit(redact_key(self._api_failure(self._parser.error), secret))
                 return
             try:
                 if self._streamed:
@@ -315,6 +320,11 @@ class LLMClient(QObject):
                 int((self._config or {}).get("timeout_s", 120)), QgsNetworkAccessManager.timeout() // 1000)
         elif status is None:
             hint = tr(" – brak połączenia z serwerem (sieć/proxy/adres API).")
+        return self._api_failure(detail, status, hint)
+
+    @staticmethod
+    def _api_failure(detail, status=None, hint=""):
+        """Komunikat „Błąd API (HTTP n): szczegóły – wskazówka” (status i wskazówka opcjonalne)."""
         return tr("Błąd API%s: %s%s") % (" (HTTP %s)" % status if status else "", detail, hint)
 
     @staticmethod
@@ -323,6 +333,12 @@ class LLMClient(QObject):
             data = json.loads(raw)
         except ValueError:
             return raw[:300] if raw else ""
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            data = data[0]          # niektóre bramki zwracają tablicę błędów
+        if isinstance(data, str):
+            return data[:300]
+        if not isinstance(data, dict):
+            return raw[:300]
         err = data.get("error")
         if isinstance(err, dict):
             return err.get("message") or json.dumps(err)[:300]

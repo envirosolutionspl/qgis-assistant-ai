@@ -9,7 +9,6 @@ Logika przeniesiona z Asystenta AI geoportalu MAIP (agent_steps.py, services.py,
 Moduł nie zależy od QGIS – zapytania sieciowe wykonuje executor.py (QgsNetworkAccessManager).
 """
 import ipaddress
-import math
 import os
 import re
 import socket
@@ -137,7 +136,7 @@ def _children(el, name):
 
 def _text(el, name, default=""):
     c = _child(el, name)
-    return (c.text or "").strip() if c is not None and c.text else default
+    return c.text.strip() if c is not None and c.text else default
 
 
 def _iter(el, name):
@@ -154,10 +153,6 @@ def _exception(root):
     if _local(root.tag) in ("ServiceExceptionReport", "ExceptionReport"):
         msg = " ".join(t.strip() for t in root.itertext() if t.strip())[:300]
         raise ServiceError(tr("Usługa zgłosiła błąd: %s") % (msg or "-"))
-
-
-def scale_to_zoom(scale):
-    return max(0, min(22, math.log2(559082264.029 / scale))) if scale and scale > 0 else None
 
 
 def parse_wms(root):
@@ -246,7 +241,9 @@ PARSERS = {"wms": parse_wms, "wmts": parse_wmts, "wfs": parse_wfs, "wcs": parse_
 def parse_capabilities(kind, raw, url):
     """Odpowiedź GetCapabilities → {"type", "url", "title", "layers": [...], …}."""
     try:
-        root = ET.fromstring(raw)
+        # defusedxml nie ma w QGIS; ElementTree nie pobiera encji zewnętrznych, a expat ≥ 2.4 (Python 3.12 w QGIS)
+        # ogranicza „bomby” rozwijania encji
+        root = ET.fromstring(raw)  # nosec B314
     except ET.ParseError:
         raise ServiceError(tr("Odpowiedź nie jest poprawnym dokumentem XML – sprawdź adres i typ usługi.")) from None
     _exception(root)
@@ -271,14 +268,17 @@ def match_layers(layers, wanted):
     wanted = [w for w in (wanted if isinstance(wanted, list) else [wanted]) if str(w or "").strip()]
     if not wanted:
         return layers[:1] if len(layers) == 1 else []
+    # nazwy i tytuły znormalizowane raz, a nie dla każdej szukanej nazwy
+    normed = [(ly, norm(ly.get("name")), norm(ly.get("title")), str(ly.get("name", "")).strip().lower())
+              for ly in layers]
     picked = []
     for w in wanted:
         wn = norm(w)
+        wl = str(w).strip().lower()
         tokens = [t for t in wn.split() if len(t) > 2 or t.isdigit()] or wn.split()
         best, best_score = None, 0
-        for ly in layers:
-            name, title = norm(ly.get("name")), norm(ly.get("title"))
-            if str(ly.get("name", "")).strip().lower() == str(w).strip().lower():
+        for ly, name, title, raw_name in normed:
+            if raw_name == wl:
                 score = 1000                                            # dokładna nazwa techniczna
             elif wn and (wn == title or wn == name):
                 score = 900
@@ -459,7 +459,7 @@ def known_overpass_server(url):
 def next_overpass_server(tried):
     """Pierwszy serwer z listy, którego jeszcze nie próbowano (porównanie po nazwie hosta)."""
     hosts = {(urlsplit(str(t or "")).hostname or "").lower() for t in tried}
-    if "overpass-api.de" in hosts or "lz4.overpass-api.de" in hosts:
+    if "lz4.overpass-api.de" in hosts:   # inny węzeł serwera głównego
         hosts.add("overpass-api.de")
     return next((s for s in OVERPASS_SERVERS if (urlsplit(s).hostname or "") not in hosts), None)
 

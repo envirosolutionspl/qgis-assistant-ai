@@ -31,6 +31,7 @@ from qgis.core import (
     QgsExpressionContext,
     QgsExpressionContextUtils,
     QgsFeature,
+    QgsFeatureRequest,
     QgsField,
     QgsGeometry,
     QgsMapLayer,
@@ -56,9 +57,10 @@ from .constants import (BDOT10K_MAX_MB, DOWNLOAD_TIMEOUT_S, LOG_TAG, MAX_CAPS_MB
 import qgis.core as _qcore
 
 from . import services as svc
+from .context_builder import ALG_NO_THREADING, PARAM_OPTIONAL, layer_extent, qgis_flag
 from .i18n import tr
 from .llm_client import _extend_qgis_timeout
-from .utils import resolve_refs, short_json
+from .utils import public_fields, resolve_refs, short_json
 
 
 def _string_field_type():
@@ -75,10 +77,15 @@ def _string_field_type():
 
 _STRING_TYPE = _string_field_type()
 
+# Błędy sieci oznaczające przekroczony czas (OperationCanceled = limit setTransferTimeout albo limit QGIS)
+_TIMEOUT_ERRORS = (QNetworkReply.NetworkError.OperationCanceledError, QNetworkReply.NetworkError.TimeoutError,
+                   QNetworkReply.NetworkError.ProxyTimeoutError)
+
 PENDING, RUNNING, DONE, ERROR, WAITING, SKIPPED = "pending", "running", "done", "error", "waiting", "skipped"
 
 # Dostawcy czytający pliki z dysku – wczytanie wymaga potwierdzenia użytkownika (audyt B2).
-LOCAL_PROVIDERS = {"ogr", "gdal", "delimitedtext", "spatialite", "pdal", "mdal", "virtual", "postgres",
+# (Inny zbiór niż utils.LOCAL_PROVIDERS, który decyduje tylko o skracaniu ścieżek w opisie źródła.)
+CONSENT_PROVIDERS = {"ogr", "gdal", "delimitedtext", "spatialite", "pdal", "mdal", "virtual", "postgres",
                    "mssql", "oracle", "hana"}
 
 _LAYER_OUTPUT_CLASSES = tuple(getattr(_qcore, n) for n in (
@@ -90,27 +97,15 @@ class StepError(Exception):
     pass
 
 
-def _flag(obj, new_path, old_name):
-    """Zwraca flagę w nowej (Qgis.*) lub starej konwencji API."""
-    try:
-        cur = Qgis
-        for part in new_path.split("."):
-            cur = getattr(cur, part)
-        return cur
-    except AttributeError:
-        return getattr(obj, old_name)
+_NO_GEOMETRY = qgis_flag(QgsFeatureRequest, "FeatureRequestFlag.NoGeometry", "NoGeometry")
 
 
 def _is_optional(param):
-    from qgis.core import QgsProcessingParameterDefinition
-    flag = _flag(QgsProcessingParameterDefinition, "ProcessingParameterFlag.Optional", "FlagOptional")
-    return bool(param.flags() & flag)
+    return bool(param.flags() & PARAM_OPTIONAL)
 
 
 def _no_threading(alg):
-    from qgis.core import QgsProcessingAlgorithm
-    flag = _flag(QgsProcessingAlgorithm, "ProcessingAlgorithmFlag.NoThreading", "FlagNoThreading")
-    return bool(alg.flags() & flag)
+    return bool(alg.flags() & ALG_NO_THREADING)
 
 
 class _Feedback(QgsProcessingFeedback):
@@ -152,6 +147,8 @@ class PlanExecutor(QObject):
         self._net_reply = None
         self._uldk_queue = []
         self._uldk_layer = None
+        self._uldk_level = None
+        self._uldk_step = None
         # Numer bieżącego uruchomienia – spóźnione odpowiedzi z poprzedniego (np. po „Zatrzymaj”)
         # są ignorowane i nie przesuwają nowego planu (audyt A2).
         self._run_id = 0
@@ -264,7 +261,7 @@ class PlanExecutor(QObject):
                 if lyr is not None:
                     item["output_layer"] = _layer_summary(lyr)
                 else:
-                    item["outputs"] = {k: v for k, v in res.items() if not k.startswith("_")}
+                    item["outputs"] = public_fields(res)
                 out.append(item)
         return out
 
@@ -298,11 +295,8 @@ class PlanExecutor(QObject):
             if handler is None:
                 raise StepError(tr("Nieobsługiwany typ kroku: %s") % step["action"])
             handler(step)
-        except StepError as e:
-            self._fail(step, str(e))
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Critical)
-            self._fail(step, "%s: %s" % (type(e).__name__, e))
+            self._fail_exc(step, e)
 
     def _complete(self, step, result=None, text=None, warning=None):
         if not self.running:
@@ -330,6 +324,15 @@ class PlanExecutor(QObject):
         self.log.emit("error", tr("Błąd w kroku „%s”: %s") % (step["title"], message))
         self.stepFailed.emit(self.idx, message)
 
+    def _fail_exc(self, step, e):
+        """Błąd kroku z wyjątku: StepError to komunikat dla użytkownika, inny wyjątek trafia też ze śladem stosu
+        do dziennika QGIS. Wywoływać wewnątrz bloku except (traceback.format_exc)."""
+        if isinstance(e, StepError):
+            self._fail(step, str(e))
+            return
+        QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Critical)
+        self._fail(step, "%s: %s" % (type(e).__name__, e))
+
     # ================================================================ referencje
     def _lookup(self, sid, key):
         if sid not in self.results:
@@ -338,7 +341,7 @@ class PlanExecutor(QObject):
         if key:
             if key not in res:
                 raise StepError(tr("Krok „%s” nie ma wyjścia „%s” (dostępne: %s).") % (
-                    sid, key, ", ".join(k for k in res if not k.startswith("_")) or "brak"))
+                    sid, key, ", ".join(public_fields(res)) or "brak"))
             return res[key]
         if "OUTPUT" in res:
             return res["OUTPUT"]
@@ -354,12 +357,7 @@ class PlanExecutor(QObject):
         ref = self._resolve(ref) if isinstance(ref, str) else ref
         if isinstance(ref, QgsMapLayer):
             return ref
-        prj = QgsProject.instance()
-        lyr = prj.mapLayer(str(ref))
-        if lyr is None:
-            found = prj.mapLayersByName(str(ref))
-            lyr = found[0] if found else None
-        return lyr
+        return _project_layer(str(ref))
 
     # ================================================================ akcje
     # ---------------------------------------------------------------- processing
@@ -529,15 +527,11 @@ class PlanExecutor(QObject):
                 selected = False
                 if isinstance(item, QgsProcessingFeatureSourceDefinition):
                     selected = item.selectedFeaturesOnly
-                    src = item.source
-                    item = src.staticValue() if hasattr(src, "staticValue") else str(src)
+                    item = _source_value(item)
                 if isinstance(item, QgsVectorLayer):
                     lyr = item
                 elif isinstance(item, str) and item and key.upper() not in ("EXPRESSION", "FORMULA", "FILTER"):
-                    lyr = QgsProject.instance().mapLayer(item)
-                    if lyr is None:
-                        found = QgsProject.instance().mapLayersByName(item)
-                        lyr = found[0] if found else None
+                    lyr = _project_layer(item)
                 else:
                     lyr = None
                 if isinstance(lyr, QgsVectorLayer) and lyr.isValid() and all(lyr is not x for x, _ in out):
@@ -649,9 +643,7 @@ class PlanExecutor(QObject):
         new = [i for i in QgsProject.instance().mapLayers().keys() if i not in before]
         if not results and not new:  # okno zamknięte bez uruchomienia algorytmu
             step["_result_text"] = tr("Okno zamknięte bez uruchomienia – krok pominięty.")
-            self._mark(step, SKIPPED)
-            self.log.emit("warning", tr("Pominięto krok: %s") % step["title"])
-            self._next()
+            self.skip()
             return
         res = {"OUTPUT": new[0]} if new else {}
         self._complete(step, res, tr("Nowe warstwy: %d") % len(new))
@@ -671,7 +663,7 @@ class PlanExecutor(QObject):
             self._require_consent(step, url, tr("adres w sieci wewnętrznej: %s") % url,
                                   lambda: self._download_data(step, svc.overpass_readable(url), opts, name))
             return
-        needs_ok = provider in LOCAL_PROVIDERS or "/vsi" in uri.lower() or uri.lower().startswith("file:")
+        needs_ok = provider in CONSENT_PROVIDERS or "/vsi" in uri.lower() or uri.lower().startswith("file:")
         if needs_ok and self.idx not in self._confirmed_loads:
             # plik lub baza wskazane przez model – tylko za zgodą użytkownika (audyt B2)
             self._mark(step, WAITING)
@@ -698,10 +690,9 @@ class PlanExecutor(QObject):
         else:
             raise StepError(tr("Nieobsługiwany dostawca danych „%s”.") % provider)
         if not layer.isValid():
-            err = layer.error().summary() if layer.error() else ""
             raise StepError(tr("Nie udało się wczytać warstwy (%s). %s\n"
                             "Możesz wczytać ją ręcznie i pominąć ten krok albo poprosić AI o poprawkę.")
-                            % (provider, err))
+                            % (provider, _layer_error(layer)))
         QgsProject.instance().addMapLayer(layer)
         self._complete(step, {"OUTPUT": layer.id()}, tr("Wczytano: %s") % layer.name())
 
@@ -710,9 +701,7 @@ class PlanExecutor(QObject):
         if not step or step["_status"] != WAITING or step["action"] not in ("load_layer", "add_service"):
             return
         if not accepted:
-            self._mark(step, SKIPPED)
-            self.log.emit("warning", tr("Pominięto krok: %s") % step["title"])
-            self._next()
+            self.skip()
             return
         self._confirmed_loads.add(self.idx)
         self._run_current(self._run_id)
@@ -763,30 +752,21 @@ class PlanExecutor(QObject):
             return
         try:   # proceed() może wykonać się z wywołania zwrotnego DNS – poza blokiem try w _run_current
             proceed()
-        except StepError as e:
-            self._fail(step, str(e))
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Critical)
-            self._fail(step, "%s: %s" % (type(e).__name__, e))
+            self._fail_exc(step, e)
 
     # ---------------------------------------------------------------- pobieranie (usługi, dane spod adresu)
     def _fetch(self, url, limit_bytes, callback, dest=None, timeout_s=DOWNLOAD_TIMEOUT_S):
         """GET przez menedżera sieci QGIS (proxy, certyfikaty).
 
-        callback(błąd, status, dane|ścieżka, typ MIME, początek danych, rozmiar).
+        callback(błąd, status, dane|ścieżka, typ MIME, początek danych, rozmiar, przekroczony czas).
 
         Limit rozmiaru przerywa pobieranie, a odpowiedź z przerwanego uruchomienia planu jest ignorowana."""
         req = QNetworkRequest(QUrl(url))
         req.setRawHeader(b"User-Agent", b"QGIS-GIS-Assistant-AI")
-        try:
-            req.setTransferTimeout(int(timeout_s) * 1000)
-        except AttributeError:
-            pass
-        try:
-            req.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
-                             QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
-        except AttributeError:
-            pass
+        req.setTransferTimeout(int(timeout_s) * 1000)
+        req.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
+                         QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
         reply = QgsNetworkAccessManager.instance().get(req)
         _extend_qgis_timeout(reply, int(timeout_s) * 1000)
         self._net_reply = reply
@@ -836,6 +816,7 @@ class PlanExecutor(QObject):
             status = int(status) if status else None
             ctype = str(reply.header(QNetworkRequest.KnownHeaders.ContentTypeHeader) or "")
             err = None
+            timed_out = False   # przekroczony czas – jawnie, bez szukania słów w (przetłumaczonym) komunikacie
             final = reply.url().toString()
             if st["redirect_blocked"]:
                 err = tr("Przekierowanie do sieci wewnętrznej zostało zablokowane.")
@@ -846,12 +827,13 @@ class PlanExecutor(QObject):
                 err = tr("Serwer zwrócił błąd %d.") % status
             elif reply.error() != QNetworkReply.NetworkError.NoError:
                 err = reply.errorString()
+                timed_out = reply.error() in _TIMEOUT_ERRORS
                 if reply.error() == QNetworkReply.NetworkError.OperationCanceledError:
                     err = tr("Serwer nie odpowiedział w wyznaczonym czasie – ogranicz obszar zapytania.")
             elif final and final != url and svc.private_url_static(final) is True and origin_private is not True:
                 err = tr("Przekierowanie do sieci wewnętrznej zostało zablokowane.")
             data = dest if dest else bytes(st["buf"])
-            callback(err, status, data, ctype, st["head"], st["size"])
+            callback(err, status, data, ctype, st["head"], st["size"], timed_out)
 
         def on_progress(received, total):
             if rid != self._run_id or not self.running or dest is None:
@@ -865,10 +847,7 @@ class PlanExecutor(QObject):
         reply.readyRead.connect(ready)
         reply.downloadProgress.connect(on_progress)
         reply.finished.connect(finished)
-        try:
-            reply.redirected.connect(redirected)
-        except AttributeError:  # pragma: no cover – bardzo stare Qt
-            pass
+        reply.redirected.connect(redirected)
 
     # ---------------------------------------------------------------- usługa sieciowa (add_service)
     def _do_add_service(self, step):
@@ -886,7 +865,7 @@ class PlanExecutor(QObject):
     def _fetch_capabilities(self, step, kind, url, caps):
         self.log.emit("debug", "GetCapabilities: %s" % svc.redact_url(caps))
         self._fetch(caps, MAX_CAPS_MB * 1048576,
-                    lambda err, status, data, ctype, head, size, s=step, k=kind, u=url:
+                    lambda err, status, data, ctype, head, size, timed_out, s=step, k=kind, u=url:
                     self._service_ready(s, k, u, err, data), timeout_s=90)
 
     def _service_ready(self, step, kind, url, err, data):
@@ -906,12 +885,8 @@ class PlanExecutor(QObject):
                                 % (info.get("title") or url, ", ".join(map(str, wanted)) or "-",
                                    svc.layers_sample(info["layers"])))
             layers = [self._service_layer(kind, info, ly) for ly in picked]
-        except StepError as e:
-            self._fail(step, str(e))
-            return
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Critical)
-            self._fail(step, "%s: %s" % (type(e).__name__, e))
+            self._fail_exc(step, e)
             return
         prj = QgsProject.instance()
         outputs = {}
@@ -926,7 +901,8 @@ class PlanExecutor(QObject):
 
     def _service_layer(self, kind, info, ly):
         """Warstwa QGIS dla warstwy usługi (układ: najpierw układ projektu, potem EPSG:2180, 3857, 4326)."""
-        prj_crs = QgsProject.instance().crs().authid() if QgsProject.instance().crs().isValid() else ""
+        pcrs = QgsProject.instance().crs()
+        prj_crs = pcrs.authid() if pcrs.isValid() else ""
         title = (ly.get("title") or ly["name"])[:120]
         uri = QgsDataSourceUri()
         if kind == "wms":
@@ -937,7 +913,7 @@ class PlanExecutor(QObject):
                          ("format", svc.pick_format(info.get("formats"))), ("layers", ly["name"]), ("styles", ""),
                          ("url", info["url"])):
                 uri.setParam(k, v)
-            layer = QgsRasterLayer(bytes(uri.encodedUri()).decode("utf-8"), title, "wms")
+            layer = QgsRasterLayer(_encoded(uri), title, "wms")
         elif kind == "wmts":
             ms = svc.pick_matrix_set(ly.get("matrix_sets"), [prj_crs])
             if not ms:
@@ -947,7 +923,7 @@ class PlanExecutor(QObject):
                          ("styles", ly.get("style") or "default"), ("tileMatrixSet", ms["id"]),
                          ("url", svc.capabilities_url("wmts", info["url"]))):
                 uri.setParam(k, v)
-            layer = QgsRasterLayer(bytes(uri.encodedUri()).decode("utf-8"), title, "wms")
+            layer = QgsRasterLayer(_encoded(uri), title, "wms")
         elif kind == "wfs":
             crs = svc.pick_crs(ly.get("crs"), [prj_crs]) or "EPSG:2180"
             for k, v in (("url", info["url"]), ("typename", ly["name"]), ("version", "auto"), ("srsname", crs),
@@ -957,10 +933,10 @@ class PlanExecutor(QObject):
         else:
             uri.setParam("url", info["url"])
             uri.setParam("identifier", ly["name"])
-            layer = QgsRasterLayer(bytes(uri.encodedUri()).decode("utf-8"), title, "wcs")
+            layer = QgsRasterLayer(_encoded(uri), title, "wcs")
         if not layer.isValid():
-            err = layer.error().summary() if layer.error() else ""
-            raise StepError(tr("QGIS nie wczytał warstwy „%s” z usługi %s. %s") % (title, kind.upper(), err))
+            raise StepError(tr("QGIS nie wczytał warstwy „%s” z usługi %s. %s")
+                            % (title, kind.upper(), _layer_error(layer)))
         return layer
 
     def _show_service_extent(self, bboxes):
@@ -990,13 +966,14 @@ class PlanExecutor(QObject):
         dest = os.path.join(QgsProcessingUtils.tempFolder(), "gis_assistant_%s.part" % uuid.uuid4().hex[:10])
         self.log.emit("info", tr("Pobieram dane: %s") % url[:160])
         self._fetch(url, MAX_DOWNLOAD_MB * 1048576,
-                    lambda err, status, path, ctype, head, size, s=step, u=url, o=opts, n=name, m=mirrors:
-                    self._data_ready(s, u, o, n, m, err, status, path, ctype, head, size), dest=dest)
+                    lambda err, status, path, ctype, head, size, timed_out, s=step, u=url, o=opts, n=name, m=mirrors:
+                    self._data_ready(s, u, o, n, m, err, status, path, ctype, head, size, timed_out), dest=dest)
 
-    def _data_ready(self, step, url, opts, name, mirrors, err, status, path, ctype, head, size):
+    def _data_ready(self, step, url, opts, name, mirrors, err, status, path, ctype, head, size, timed_out):
+        final = None
         try:
             if err:
-                busy = svc.busy_status(status) or "czasie" in err or "time" in err.lower()
+                busy = svc.busy_status(status) or timed_out
                 if busy and mirrors:
                     self.log.emit("warning", tr("Serwer Overpass jest przeciążony – próbuję serwera zapasowego."))
                     _remove(path)
@@ -1015,16 +992,13 @@ class PlanExecutor(QObject):
             final = path[:-len(".part")] + ext
             os.replace(path, final)
             layer = _open_downloaded(final, ext, opts, name)
-        except StepError as e:
-            _remove(path)
-            self._fail(step, str(e))
-            return
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Critical)
-            self._fail(step, "%s: %s" % (type(e).__name__, e))
+            _remove(path)
+            _remove(final)   # plik przemianowany, ale nie dał się otworzyć – nie zostaje w katalogu tymczasowym
+            self._fail_exc(step, e)
             return
         QgsProject.instance().addMapLayer(layer)
-        mb = "%.1f MB" % (size / 1048576) if size >= 104858 else "%d kB" % max(1, round(size / 1024))
+        mb = _mb(size)
         warning = None
         if isinstance(layer, QgsVectorLayer):
             count = layer.featureCount()
@@ -1041,8 +1015,7 @@ class PlanExecutor(QObject):
         """Pobiera paczkę BDOT10k powiatu z danych otwartych GUGiK (GPKG → SHP → GML) i wczytuje jedną klasę
         obiektów. Paczka jest pamiętana na czas sesji – kolejne klasy z tego samego powiatu nie pobierają jej
         ponownie."""
-        cls = svc.bdot10k_class(step.get("class") or step.get("layer") or step.get("klasa")
-                                or step.get("object_class"))
+        cls = svc.bdot10k_class(step.get("class"))   # klucze zastępcze (layer, klasa…) scala plan_model.normalize_steps
         if not cls:
             raise StepError(tr("Brak kodu klasy BDOT10k (np. OT_BUBD_A – budynki, OT_SKDR_L – drogi)."))
         powiat = self._bdot10k_powiat(step)
@@ -1056,13 +1029,15 @@ class PlanExecutor(QObject):
 
     def _bdot10k_powiat(self, step):
         """TERYT powiatu z kroku; referencja „{{sN}}” do warstwy ULDK bierze kod z jej pola „teryt”."""
-        raw = step.get("teryt") or step.get("powiat") or step.get("teryt_powiat") or ""
+        raw = step.get("teryt") or ""   # „powiat”, „teryt_powiat” scala plan_model.normalize_steps
         if isinstance(raw, str) and "{{" in raw:
             lyr = self.get_layer(raw)
             if isinstance(lyr, QgsVectorLayer):
                 idx = lyr.fields().lookupField("teryt")
                 if idx >= 0:
-                    raw = next((str(f[idx]) for f in lyr.getFeatures()), "")
+                    # tylko jedno pole pierwszego obiektu, bez geometrii (warstwa ULDK może mieć wiele działek)
+                    req = QgsFeatureRequest().setFlags(_NO_GEOMETRY).setSubsetOfAttributes([idx]).setLimit(1)
+                    raw = next((str(f[idx]) for f in lyr.getFeatures(req)), "")
         code = svc.bdot10k_powiat_code(raw)
         if not code:
             raise StepError(tr("Brak kodu TERYT powiatu dla paczki BDOT10k (np. „1418”; gmina „141805_2” też "
@@ -1074,7 +1049,8 @@ class PlanExecutor(QObject):
         dest = os.path.join(QgsProcessingUtils.tempFolder(), "gis_assistant_bdot10k_%s.part" % uuid.uuid4().hex[:8])
         self.log.emit("info", tr("Pobieram paczkę BDOT10k powiatu %s: %s") % (powiat, url))
         self._fetch(url, BDOT10K_MAX_MB * 1048576,
-                    lambda err, status, path, ctype, head, size, s=step, p=powiat, c=cls, n=name, r=rest, u=url:
+                    lambda err, status, path, ctype, head, size, timed_out,
+                    s=step, p=powiat, c=cls, n=name, r=rest, u=url:
                     self._bdot10k_ready(s, p, c, n, r, u, err, status, path, head, size), dest=dest)
 
     def _bdot10k_ready(self, step, powiat, cls, name, rest, url, err, status, path, head, size):
@@ -1093,9 +1069,9 @@ class PlanExecutor(QObject):
                 raise StepError(tr("Serwer GUGiK zwrócił coś innego niż archiwum ZIP (%s).") % url)
             final = path[:-len(".part")] + ".zip"
             os.replace(path, final)
-        except StepError as e:
+        except Exception as e:  # noqa: BLE001 – wywołanie zwrotne sieci: każdy błąd kończy krok, a nie slot Qt
             _remove(path)
-            self._fail(step, str(e))
+            self._fail_exc(step, e)
             return
         self._bdot_cache[powiat] = final
         self.statusText.emit(tr("Wykonuję plan…"))
@@ -1105,12 +1081,8 @@ class PlanExecutor(QObject):
     def _bdot10k_load(self, step, zip_path, powiat, cls, name):
         try:
             layer = _bdot10k_layer(zip_path, cls, name)
-        except StepError as e:
-            self._fail(step, str(e))
-            return
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Critical)
-            self._fail(step, "%s: %s" % (type(e).__name__, e))
+            self._fail_exc(step, e)
             return
         QgsProject.instance().addMapLayer(layer)
         count = layer.featureCount()
@@ -1124,8 +1096,7 @@ class PlanExecutor(QObject):
     # ---------------------------------------------------------------- ULDK GUGiK
     def _do_uldk_boundary(self, step):
         level = str(step.get("level") or "").lower().replace("ó", "o").replace("ę", "e").replace("ł", "l")
-        level = {"województwo": "wojewodztwo", "wojewodztwa": "wojewodztwo", "obręb": "obreb",
-                 "działka": "dzialka", "dzialki": "dzialka"}.get(level, level)
+        level = {"wojewodztwa": "wojewodztwo", "dzialki": "dzialka"}.get(level, level)
         if level not in ULDK_LEVELS:
             raise StepError(tr("Nieznany poziom jednostki ULDK: %s") % step.get("level"))
         teryt = step.get("teryt") or step.get("id_teryt") or step.get("code")
@@ -1158,10 +1129,7 @@ class PlanExecutor(QObject):
         url = ULDK_URL + "?" + urlencode({"request": request, "id": code, "result": result, "srid": "2180"})
         self.log.emit("debug", "ULDK: %s" % url)
         req = QNetworkRequest(QUrl(url))
-        try:
-            req.setTransferTimeout(60000)
-        except AttributeError:
-            pass
+        req.setTransferTimeout(60000)
         reply = QgsNetworkAccessManager.instance().get(req)
         self._net_reply = reply
         rid = self._run_id
@@ -1180,13 +1148,16 @@ class PlanExecutor(QObject):
             text = bytes(reply.readAll()).decode("utf-8", "replace")
         finally:
             reply.deleteLater()
-        feats = self._parse_uldk(text, code)
-        if not feats:
-            self._fail(step, tr("ULDK nie znalazło jednostki o kodzie „%s” (%s). Odpowiedź: %s")
-                       % (code, self._uldk_level, text.strip()[:120]))
-            return
-        self._uldk_layer.dataProvider().addFeatures(feats)
-        self._uldk_next()
+        try:   # wywołanie zwrotne sieci – poza blokiem try w _run_current
+            feats = self._parse_uldk(text, code)
+            if not feats:
+                self._fail(step, tr("ULDK nie znalazło jednostki o kodzie „%s” (%s). Odpowiedź: %s")
+                           % (code, self._uldk_level, text.strip()[:120]))
+                return
+            self._uldk_layer.dataProvider().addFeatures(feats)
+            self._uldk_next()
+        except Exception as e:  # noqa: BLE001
+            self._fail_exc(step, e)
 
     def _parse_uldk(self, text, code):
         """Odpowiedź ULDK: 1. linia = status, kolejne = "SRID=2180;WKT|teryt|nazwa|…|województwo"."""
@@ -1231,7 +1202,6 @@ class PlanExecutor(QObject):
             self._complete(step, {}, tr("Warstwa jest pusta – brak zasięgu do przybliżenia."))
             return
         try:
-            from qgis.core import QgsCoordinateTransform
             xform = QgsCoordinateTransform(layer.crs(), canvas.mapSettings().destinationCrs(), QgsProject.instance())
             ext = xform.transformBoundingBox(ext)
         except Exception:  # noqa: BLE001
@@ -1252,7 +1222,8 @@ class PlanExecutor(QObject):
 
     def run_python(self, accepted):
         step = self.current()
-        if not step:
+        # tylko krok python czekający na decyzję – np. nie po „Zatrzymaj” klikniętym w czasie okna podglądu kodu
+        if not self.running or not step or step["_status"] != WAITING or step["action"] != "python":
             return
         if not accepted:
             self._mark(step, SKIPPED)
@@ -1261,14 +1232,15 @@ class PlanExecutor(QObject):
             return
         self._mark(step, RUNNING)
         import processing
-        from qgis import core as qcore
-        ns = {name: getattr(qcore, name) for name in dir(qcore) if name.startswith("Qgs") or name == "Qgis"}
+        ns = {name: getattr(_qcore, name) for name in dir(_qcore) if name.startswith("Qgs") or name == "Qgis"}
         ns.update({"iface": self.iface, "processing": processing, "QgsProject": QgsProject,
                    "results": {k: dict(v) for k, v in self.results.items()}, "get_layer": self.get_layer})
         buf = io.StringIO()
         try:
+            code = compile(step.get("code") or "", "<gis_assistant_ai:%s>" % step["id"], "exec")
             with contextlib.redirect_stdout(buf):
-                exec(compile(step.get("code") or "", "<gis_assistant_ai:%s>" % step["id"], "exec"), ns)  # noqa: S102
+                # kod pokazany użytkownikowi i przez niego zatwierdzony (confirmPython) – wykonanie to cel kroku
+                exec(code, ns)  # noqa: S102  # nosec B102
         except Exception:  # noqa: BLE001
             self._fail(step, traceback.format_exc(limit=3))
             return
@@ -1337,11 +1309,35 @@ def _printable(params):
     out = {}
     for k, v in params.items():
         if isinstance(v, QgsProcessingFeatureSourceDefinition):
-            out[k] = {"source": v.source.staticValue() if hasattr(v.source, "staticValue") else str(v.source),
-                      "selected_only": v.selectedFeaturesOnly}
+            out[k] = {"source": _source_value(v), "selected_only": v.selectedFeaturesOnly}
         else:
             out[k] = v if isinstance(v, (int, float, str, bool, list, dict, type(None))) else str(v)
     return out
+
+
+def _source_value(defn):
+    """Źródło QgsProcessingFeatureSourceDefinition (QgsProperty) jako wartość statyczna."""
+    src = defn.source
+    return src.staticValue() if hasattr(src, "staticValue") else str(src)
+
+
+def _project_layer(ref):
+    """Warstwa projektu po identyfikatorze, a gdy takiej nie ma – pierwsza o tej nazwie."""
+    prj = QgsProject.instance()
+    lyr = prj.mapLayer(ref)
+    if lyr is None:
+        found = prj.mapLayersByName(ref)
+        lyr = found[0] if found else None
+    return lyr
+
+
+def _encoded(uri):
+    """QgsDataSourceUri w postaci zakodowanej (dostawcy wms, wcs)."""
+    return bytes(uri.encodedUri()).decode("utf-8")
+
+
+def _layer_error(layer):
+    return layer.error().summary() if layer.error() else ""
 
 
 # ------------------------------------------------------------------ pomocnicze (kontrola wyników, pliki)
@@ -1378,13 +1374,9 @@ def _layer_summary(lyr):
             out["feature_count"] = int(lyr.featureCount())
         except Exception:  # noqa: BLE001
             pass
-    try:
-        e = lyr.extent()
-        if not e.isNull() and not e.isEmpty():
-            digits = 5 if lyr.crs().isValid() and lyr.crs().isGeographic() else 1
-            out["extent"] = [round(v, digits) for v in (e.xMinimum(), e.yMinimum(), e.xMaximum(), e.yMaximum())]
-    except Exception:  # noqa: BLE001
-        pass
+    ext = layer_extent(lyr)   # None także dla współrzędnych nieskończonych (nie dałyby poprawnego JSON)
+    if ext:
+        out["extent"] = ext
     return out
 
 
@@ -1405,6 +1397,11 @@ def _extent_in_project(lyr):
         return None
 
 
+def _looks_geographic(xmin, ymin, xmax, ymax):
+    """Czy liczby zasięgu mieszczą się w zakresie stopni geograficznych (z małym zapasem)."""
+    return -180.5 <= xmin and xmax <= 180.5 and -90.5 <= ymin and ymax <= 90.5
+
+
 def _extents_overlap(exts):
     x0, y0 = max(e[0] for e in exts), max(e[1] for e in exts)
     x1, y1 = min(e[2] for e in exts), min(e[3] for e in exts)
@@ -1423,7 +1420,7 @@ def _native_extent_hint(layer):
     vals = [e.xMinimum(), e.yMinimum(), e.xMaximum(), e.yMaximum()]
     if not all(math.isfinite(v) for v in vals):
         return " " + tr("Współrzędne są nieskończone – dane zostały uszkodzone; użyj warstwy źródłowej.")
-    deg = -180.5 <= vals[0] and vals[2] <= 180.5 and -90.5 <= vals[1] and vals[3] <= 90.5
+    deg = _looks_geographic(*vals)
     return " " + tr("Zasięg „%s” w układzie warstwy (%s): x %.6g…%.6g, y %.6g…%.6g – liczby wyglądają na %s.") % (
         layer.name(), layer.crs().authid() or tr("brak układu"), vals[0], vals[2], vals[1], vals[3],
         tr("stopnie (EPSG:4326)") if deg else tr("metry"))
@@ -1436,8 +1433,7 @@ def _guard_assign_crs(alg_id, params, get_layer):
         return
     layer = params.get("INPUT")
     if isinstance(layer, QgsProcessingFeatureSourceDefinition):
-        src = layer.source
-        layer = src.staticValue() if hasattr(src, "staticValue") else str(src)
+        layer = _source_value(layer)
     layer = layer if isinstance(layer, QgsMapLayer) else get_layer(str(layer)) if layer else None
     target = params.get("CRS")
     tcrs = target if isinstance(target, QgsCoordinateReferenceSystem) \
@@ -1448,7 +1444,7 @@ def _guard_assign_crs(alg_id, params, get_layer):
     e = layer.extent()
     if e.isEmpty() or e.isNull():
         return
-    deg = -180.5 <= e.xMinimum() and e.xMaximum() <= 180.5 and -90.5 <= e.yMinimum() and e.yMaximum() <= 90.5
+    deg = _looks_geographic(e.xMinimum(), e.yMinimum(), e.xMaximum(), e.yMaximum())
     if tcrs.isGeographic() and not deg:
         raise StepError(tr("Nie przypisuję układu %s warstwie „%s”: jej współrzędne (np. %.0f, %.0f) są w metrach, "
                            "a ten układ jest w stopniach – obiekty trafiłyby poza kulę ziemską. Warstwa ma układ %s; "
@@ -1504,7 +1500,7 @@ def _sublayer_matching(uri, cls):
     """Nazwa podwarstwy (tabeli) zawierającej kod klasy; None, gdy brak albo QGIS nie potrafi jej wylistować."""
     try:
         details = QgsProviderRegistry.instance().querySublayers(uri)
-    except Exception:  # noqa: BLE001 – starsze QGIS bez querySublayers albo nieczytelny plik
+    except Exception:  # noqa: BLE001 – nieczytelny albo uszkodzony plik
         return None
     cls_l = cls.lower()
     return next((d.name() for d in details if cls_l in d.name().lower()), None)

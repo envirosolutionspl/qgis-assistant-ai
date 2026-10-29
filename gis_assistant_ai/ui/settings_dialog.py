@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 
 from qgis.PyQt.QtCore import QUrl
-from qgis.PyQt.QtWidgets import QApplication, QSpinBox
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
 )
 
 from ..constants import ICON_PATH, OLLAMA_TEMPERATURE, PLUGIN_NAME, PROVIDERS
@@ -60,8 +59,10 @@ class SettingsDialog(QDialog):
         ep_row.addWidget(self.endpoint, 1)
         ep_row.addWidget(reset)
         form.addRow(tr("Adres API:"), ep_row)
-        self.http_warn = QLabel()
+        self.http_warn = QLabel("⚠ " + tr("Adres nie używa szyfrowania (http://) – klucz API zostałby wysłany "
+                                          "jawnym tekstem. Użyj https://."))
         self.http_warn.setWordWrap(True)
+        self.http_warn.setStyleSheet("color:%s;font-size:10px;font-weight:600;" % self.pal["error"])
         self.http_warn.hide()
         form.addRow("", self.http_warn)
         self.endpoint.textChanged.connect(self._check_endpoint)
@@ -85,7 +86,10 @@ class SettingsDialog(QDialog):
         self.workspace.setPlaceholderText(tr("opcjonalnie, np. wrkspc_01AbCd… – wymagane dla kluczy bez workspace"))
         self.workspace_label = QLabel(tr("ID workspace:"))
         form.addRow(self.workspace_label, self.workspace)
-        self.key_info = QLabel()
+        self.key_info = QLabel(
+            tr("Klucz jest wysyłany wyłącznie w nagłówku zapytania do powyższego adresu API. "
+            "Nie jest zapisywany jawnym tekstem w profilu QGIS."))
+        self.key_info.setObjectName("hint")
         self.key_info.setWordWrap(True)
         form.addRow("", self.key_info)
         lay.addWidget(box)
@@ -106,7 +110,7 @@ class SettingsDialog(QDialog):
             "współrzędnych, zasięg mapy). Hasła, loginy, tokeny i pełne ścieżki dysków są usuwane. "
             "Wybierając Ollama, wszystko pozostaje na Twoim komputerze."))
         info.setWordWrap(True)
-        info.setStyleSheet("color:%s;font-size:10px;" % self.pal["muted"])
+        info.setObjectName("hint")
         v.addWidget(self.send_samples)
         v.addWidget(self.allow_python)
         v.addWidget(self.web_search)
@@ -137,7 +141,7 @@ class SettingsDialog(QDialog):
         port_row.addWidget(self.mcp_copy)
         self.mcp_status = QLabel()
         self.mcp_status.setWordWrap(True)
-        self.mcp_status.setStyleSheet("color:%s;font-size:10px;" % self.pal["muted"])
+        self.mcp_status.setObjectName("hint")
         mv.addWidget(self.mcp_enabled)
         mv.addLayout(port_row)
         mv.addWidget(self.mcp_status)
@@ -208,10 +212,6 @@ class SettingsDialog(QDialog):
         self.api_key.setPlaceholderText(
             tr("•••••••• (klucz zapisany – wpisz nowy, aby zmienić)") if has else tr("wklej klucz API"))
         self.del_key.setEnabled(has)
-        self.key_info.setText(
-            tr("Klucz jest wysyłany wyłącznie w nagłówku zapytania do powyższego adresu API. "
-            "Nie jest zapisywany jawnym tekstem w profilu QGIS."))
-        self.key_info.setStyleSheet("color:%s;font-size:10px;" % self.pal["muted"])
 
     def _insecure_endpoint(self):
         """Klucz API przez nieszyfrowane http:// do innego komputera (audyt B4)."""
@@ -221,12 +221,7 @@ class SettingsDialog(QDialog):
         return url.scheme().lower() == "http" and url.host().lower() not in ("localhost", "127.0.0.1", "::1")
 
     def _check_endpoint(self, *_):
-        bad = self._insecure_endpoint()
-        self.http_warn.setVisible(bad)
-        if bad:
-            self.http_warn.setText("⚠ " + tr("Adres nie używa szyfrowania (http://) – klucz API zostałby wysłany "
-                                             "jawnym tekstem. Użyj https://."))
-            self.http_warn.setStyleSheet("color:%s;font-size:10px;font-weight:600;" % self.pal["error"])
+        self.http_warn.setVisible(self._insecure_endpoint())
 
     # ------------------------------------------------------------------ akcje
     def _delete_key(self):
@@ -271,8 +266,8 @@ class SettingsDialog(QDialog):
         server = mcp_server.instance()
         if server is None:
             return
-        self.settings.set_value("mcp/port", int(self.mcp_port.value()))
-        QApplication.clipboard().setText(mcp_server.config_snippet(server))
+        # port z pola (jeszcze niezapisany) – zapis dopiero przyciskiem „Zapisz”
+        QApplication.clipboard().setText(mcp_server.config_snippet(server, port=self.mcp_port.value()))
         self.mcp_status.setText(tr("Skopiowano do schowka fragment claude_desktop_config.json (zawiera token – "
                                    "nie udostępniaj go). Wklej go do pliku i uruchom Claude Desktop ponownie."))
 

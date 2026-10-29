@@ -91,12 +91,12 @@ class SecretStore:
     """Klucze API: zaszyfrowany magazyn QGIS lub pamięć sesji."""
 
     _session = {}
+    _KEY = "asystent_ai/api_key/%s"
 
     @classmethod
     def clear_session(cls):
         """Usuwa klucze trzymane w pamięci (wywoływane przy wyłączaniu wtyczki)."""
         cls._session.clear()
-    _KEY = "asystent_ai/api_key/%s"
 
     @classmethod
     def _am(cls):
@@ -153,13 +153,16 @@ class SecretStore:
         am = cls._am()
         if am is None:
             return True, tr("tylko w pamięci – menedżer uwierzytelniania QGIS jest niedostępny")
+        # Gdy zapis się nie uda, usuwamy poprzednio zapisany klucz – inaczej po restarcie QGIS wróciłby stary.
         try:
             if not am.setMasterPassword(True):
+                cls._remove_persistent(provider)
                 return True, tr("tylko w pamięci – nie podano hasła głównego QGIS")
             if am.storeAuthSetting(cls._KEY % provider, secret, True):
                 return True, tr("zaszyfrowany w menedżerze uwierzytelniania QGIS")
         except Exception as e:  # noqa: BLE001
             QgsMessageLog.logMessage(tr("Nie udało się zapisać klucza API: %s") % e, LOG_TAG, Qgis.MessageLevel.Warning)
+        cls._remove_persistent(provider)
         return True, tr("tylko w pamięci – zapis w menedżerze uwierzytelniania nie powiódł się")
 
     @classmethod

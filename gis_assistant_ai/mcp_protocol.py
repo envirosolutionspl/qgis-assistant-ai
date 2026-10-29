@@ -7,15 +7,17 @@ parser żądań HTTP, budowanie odpowiedzi, katalog narzędzi (nazwa + schemat J
 i dyspozytor JSON-RPC, któremu wykonanie narzędzia dostarcza się z zewnątrz (wywołanie zwrotne, bo kroki w QGIS
 są asynchroniczne).
 """
+import hmac
 import json
+from urllib.parse import urlsplit
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "gis-assistant-ai-qgis"
 MAX_BODY = 4 * 1048576          # 4 MB – plan z wieloma krokami to kilka kB; większe żądania odrzucamy
 
-# Błędy JSON-RPC (standard) + własne (-32000…)
+# Błędy JSON-RPC (standard)
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
-BUSY, UNAUTHORIZED = -32000, -32001
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 # ------------------------------------------------------------------ narzędzia
@@ -376,19 +378,34 @@ def parse_http_request(buf):
     return method.upper(), path, headers, bytes(buf[body_start:body_start + length]), body_start + length
 
 
-_STATUS = {200: "OK", 202: "Accepted", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found",
-           405: "Method Not Allowed", 413: "Payload Too Large", 500: "Internal Server Error"}
+_STATUS = {200: "OK", 202: "Accepted", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+           405: "Method Not Allowed"}
 
 
-def http_response(status, body=b"", content_type="application/json"):
+def http_response(status, body=b""):
     if isinstance(body, (dict, list)):
         body = json.dumps(body, ensure_ascii=False).encode("utf-8")
     elif isinstance(body, str):
         body = body.encode("utf-8")
-    head = ("HTTP/1.1 %d %s\r\nContent-Type: %s; charset=utf-8\r\nContent-Length: %d\r\n"
-            "Connection: close\r\nCache-Control: no-store\r\n\r\n" % (status, _STATUS.get(status, "OK"), content_type,
-                                                                      len(body)))
+    head = ("HTTP/1.1 %d %s\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %d\r\n"
+            "Connection: close\r\nCache-Control: no-store\r\n\r\n" % (status, _STATUS.get(status, "OK"), len(body)))
     return head.encode("iso-8859-1") + body
+
+
+def origin_allowed(headers):
+    """Ochrona przed DNS rebinding (wymóg specyfikacji MCP): nagłówek Origin, jeśli jest, musi wskazywać localhost.
+
+    Klienci spoza przeglądarki (most stdio) nie wysyłają Origin – takie żądania przechodzą dalej do sprawdzenia
+    tokenu."""
+    origin = headers.get("origin")
+    if origin is None:
+        return True
+    try:
+        parts = urlsplit(origin.strip())
+        host, _ = parts.hostname, parts.port   # .port zgłasza ValueError dla nieprawidłowego portu
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and host in LOCAL_HOSTS
 
 
 def authorized(headers, token):
@@ -402,13 +419,8 @@ def authorized(headers, token):
 
 
 def _same(a, b):
-    # porównanie w stałym czasie (bez modułu hmac, żeby most i serwer dzieliły ten sam kod)
-    if len(a) != len(b):
-        return False
-    diff = 0
-    for x, y in zip(a, b):
-        diff |= ord(x) ^ ord(y)
-    return diff == 0
+    # porównanie w stałym czasie
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
 # ------------------------------------------------------------------ JSON-RPC
@@ -446,9 +458,14 @@ class Dispatcher:
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
             respond(rpc_error(msg.get("id") if isinstance(msg, dict) else None, INVALID_REQUEST, "Invalid Request"))
             return
-        method, msg_id, params = msg["method"], msg.get("id"), msg.get("params") or {}
+        method, msg_id, params = msg["method"], msg.get("id"), msg.get("params")
         if msg_id is None:                      # powiadomienie – bez odpowiedzi
             respond(None)
+            return
+        if params is None:
+            params = {}
+        elif not isinstance(params, dict):
+            respond(rpc_error(msg_id, INVALID_PARAMS, "params must be an object"))
             return
         if method == "initialize":
             respond(rpc_result(msg_id, {

@@ -18,11 +18,19 @@ ACTION_LABELS = {
     "note": N_("INFORMACJA"),
 }
 STATUS_GLYPH = {"pending": "○", "running": "◉", "done": "✔", "error": "✖", "waiting": "❚❚", "skipped": "↷"}
+# status kroku → klucz palety: kolor znaku statusu i tło wiersza
+STATUS_COLOR = {"pending": "muted", "running": "running", "done": "ok", "error": "error", "waiting": "warn",
+                "skipped": "muted"}
+STATUS_ROW_BG = {"running": "primary_soft", "waiting": "row_wait", "error": "row_error"}
 
 
 def _wrap(p, body):
     return ("<html><body style='font-family:\"Segoe UI\",\"Noto Sans\",sans-serif;font-size:12px;"
             "color:%s;background:%s;'>%s</body></html>" % (p["text"], p["card"], body))
+
+
+def _md(p, text):
+    return md_to_html(text, p["primary"], p["code_bg"])
 
 
 def _header(p, title, summary=None, kicker=None):
@@ -34,7 +42,7 @@ def _header(p, title, summary=None, kicker=None):
         p["primary_text"], esc(title or ""))
     if summary:
         h += "<div style='color:%s;margin-top:4px;'>%s</div>" % (
-            p["text"], md_to_html(summary, p["primary"], p["code_bg"]))
+            p["text"], _md(p, summary))
     return h
 
 
@@ -88,18 +96,18 @@ def error(p, message, raw=None):
 # ------------------------------------------------------------------ odpowiedzi
 def answer(p, resp):
     body = _header(p, resp.get("title") or tr("Odpowiedź"), None, tr("ODPOWIEDŹ"))
-    body += "<div style='margin-top:6px;'>%s</div>" % md_to_html(resp.get("text", ""), p["primary"], p["code_bg"])
+    body += "<div style='margin-top:6px;'>%s</div>" % _md(p, resp.get("text", ""))
     return _wrap(p, body)
 
 
 def clarify(p, resp):
     body = _header(p, resp.get("title") or tr("Potrzebuję doprecyzowania"), None, tr("PYTANIE"))
-    body += "<div style='margin-top:6px;'>%s</div>" % md_to_html(resp.get("question", ""), p["primary"], p["code_bg"])
+    body += "<div style='margin-top:6px;'>%s</div>" % _md(p, resp.get("question", ""))
     opts = resp.get("options") or []
     if opts:
         body += "<div style='margin-top:8px;'>"
-        for o in opts[:6]:
-            body += "<a href='action:answer:%s' style='color:%s;'>› %s</a><br>" % (esc(o), p["primary"], esc(o))
+        for i, o in enumerate(opts[:6]):  # numer opcji – dock odczyta jej treść z response["options"]
+            body += "<a href='action:answer:%d' style='color:%s;'>› %s</a><br>" % (i, p["primary"], esc(o))
         body += "</div>"
     body += "<div style='color:%s;margin-top:6px;font-size:11px;'>%s</div>" % (
         p["muted"], tr("Odpowiedz w polu poleceń lub kliknij opcję."))
@@ -125,7 +133,7 @@ def tools(p, resp, installed_plugins):
                          "<b style='color:%s;'>%s</b></div>" % (
                              p["muted"], label, p["primary_text"], esc(t[key]).replace("&gt;", "›")))
         if t.get("description"):
-            body += "<div style='margin-top:5px;'>%s</div>" % md_to_html(t["description"], p["primary"], p["code_bg"])
+            body += "<div style='margin-top:5px;'>%s</div>" % _md(p, t["description"])
         links = []
         if t.get("algorithm_id"):
             links.append("<a href='action:open_alg:%s' style='color:%s;font-weight:600;'>%s</a>"
@@ -174,9 +182,8 @@ def plan(p, resp, show_details=False, note=None):
 
 def _step_row(p, n, s, show_details):
     status = s.get("_status", "pending")
-    color = {"pending": p["muted"], "running": p["running"], "done": p["ok"], "error": p["error"],
-             "waiting": p["warn"], "skipped": p["muted"]}[status]
-    bg = {"running": p["primary_soft"], "waiting": p["row_wait"], "error": p["row_error"]}.get(status, p["card"])
+    color = p[STATUS_COLOR[status]]
+    bg = p[STATUS_ROW_BG.get(status, "card")]
     glyph = STATUS_GLYPH[status]
     title_style = "font-weight:600;" + (
         "text-decoration:line-through;color:%s;" % p["muted"] if status == "skipped" else "")
@@ -195,7 +202,7 @@ def _step_row(p, n, s, show_details):
         row += "<div style='color:%s;margin-top:2px;'>%s</div>" % (p["muted"], esc(s["description"]))
     elif s["action"] == "user_action" and s.get("message"):
         row += "<div style='color:%s;margin-top:2px;'>%s</div>" % (
-            p["muted"], md_to_html(str(s["message"])[:400], p["primary"], p["code_bg"]))
+            p["muted"], _md(p, str(s["message"])[:400]))
     meta = _meta(s)
     if meta:
         row += "<div style='color:%s;font-size:10px;font-family:Consolas,monospace;margin-top:2px;'>%s</div>" % (

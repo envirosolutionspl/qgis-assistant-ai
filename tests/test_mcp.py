@@ -2,6 +2,7 @@
 """Serwer MCP: warstwa protokołu (bez Qt) i most stdio (uruchamiany jako podproces)."""
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -41,6 +42,19 @@ class TestHttp:
         assert proto.authorized({"x-token": "abc"}, "abc")
         assert not proto.authorized({"authorization": "Bearer abd"}, "abc")
         assert not proto.authorized({}, "abc") and not proto.authorized({"authorization": "Bearer "}, "")
+        assert not proto.authorized({"authorization": "Bearer abcd"}, "abc")
+        assert not proto.authorized({"authorization": "Bearer ąbc"}, "abc")
+
+    def test_forbidden_status(self):
+        assert proto.http_response(403, {"error": "x"}).startswith(b"HTTP/1.1 403 Forbidden\r\n")
+
+    def test_origin(self):
+        assert proto.origin_allowed({})
+        for ok in ("http://localhost", "http://127.0.0.1:8765", "https://localhost:3000", "http://[::1]:80"):
+            assert proto.origin_allowed({"origin": ok}), ok
+        for bad in ("https://evil.example", "http://127.0.0.1.evil.example", "null", "", "http://localhost:99999",
+                    "file://localhost", "http://localhost.evil.example:8765"):
+            assert not proto.origin_allowed({"origin": bad}), bad
 
 
 # ------------------------------------------------------------------ JSON-RPC
@@ -68,6 +82,13 @@ class TestDispatcher:
         r = self._dispatch({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "x"}})
         assert r["error"]["code"] == proto.INVALID_PARAMS
         assert self._dispatch("garbage")["error"]["code"] == proto.INVALID_REQUEST
+
+    def test_params_must_be_object(self):
+        for params in ([1, 2], "x", 5):
+            r = self._dispatch({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": params})
+            assert r["error"]["code"] == proto.INVALID_PARAMS and r["id"] == 5
+        r = self._dispatch({"jsonrpc": "2.0", "id": 6, "method": "ping", "params": None})
+        assert r["result"] == {}
 
     def test_tool_call_async(self):
         pending = {}
@@ -135,6 +156,9 @@ class _FakeQgis(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        if self.path != "/mcp":
+            self._send(404, {"error": "not found"})
+            return
         if self.headers.get("Authorization") != "Bearer " + self.token:
             self._send(401, {"error": "unauthorized"})
             return
@@ -207,3 +231,54 @@ class TestBridge:
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "qgis_status"}}], lang="en")
         assert out[0]["result"]["tools"][0]["description"].startswith("QGIS is not responding")
         assert "Start QGIS" in out[1]["result"]["content"][0]["text"]
+
+    def test_http_error_is_not_offline(self, fake_qgis):
+        out, err = _run_bridge(fake_qgis.replace("/mcp", "/other"), "secret", [
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}])
+        assert out[0]["id"] == 1 and out[0]["error"]["data"]["httpStatus"] == 404
+        assert "404" in out[0]["error"]["message"] and "404" in err
+
+    def test_rejects_non_local_url(self):
+        out, err = _run_bridge("http://example.com/mcp", "t", [{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+        assert out == [] and "--url" in err
+
+    def test_constants_match_protocol(self):
+        from gis_assistant_ai import mcp_bridge
+        assert mcp_bridge.PROTOCOL_VERSION == proto.PROTOCOL_VERSION
+        assert mcp_bridge.SERVER_NAME == proto.SERVER_NAME
+        assert mcp_bridge.LOCAL_HOSTS == proto.LOCAL_HOSTS
+        assert mcp_bridge.local_url("http://127.0.0.1:8765/mcp") and mcp_bridge.local_url("http://localhost:1/mcp")
+        assert not mcp_bridge.local_url("https://127.0.0.1:8765/mcp")
+        assert not mcp_bridge.local_url("http://127.0.0.1.evil.example/mcp")
+
+    def test_list_changed_after_qgis_starts(self):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        proc = subprocess.Popen([sys.executable, BRIDGE, "--url", "http://127.0.0.1:%d/mcp" % port],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                encoding="utf-8", env={**os.environ, "GIS_ASSISTANT_MCP_TOKEN": "secret"})
+        srv = None
+        try:
+            def ask(msg):
+                proc.stdin.write(json.dumps(msg) + "\n")
+                proc.stdin.flush()
+                return json.loads(proc.stdout.readline())
+
+            init = ask({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+            assert init["result"]["capabilities"]["tools"]["listChanged"] is True
+            srv = HTTPServer(("127.0.0.1", port), _FakeQgis)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            assert ask({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["echo"] == "tools/list"
+            assert json.loads(proc.stdout.readline()) == {"jsonrpc": "2.0",
+                                                          "method": "notifications/tools/list_changed"}
+            assert ask({"jsonrpc": "2.0", "id": 3, "method": "ping"})["id"] == 3   # powiadomienie tylko raz
+            proc.stdin.close()
+            assert proc.stdout.read().strip() == ""
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
+            if srv is not None:
+                srv.shutdown()

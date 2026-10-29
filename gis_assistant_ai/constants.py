@@ -4,7 +4,6 @@ import os
 from .i18n import N_
 
 PLUGIN_NAME = "GIS Assistant AI"
-PLUGIN_SLUG = "gis_assistant_ai"
 PLUGIN_DIR = os.path.dirname(__file__)
 IMG_DIR = os.path.join(PLUGIN_DIR, "img")
 ICON_PATH = os.path.join(IMG_DIR, "icon.png")

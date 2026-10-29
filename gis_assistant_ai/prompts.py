@@ -6,6 +6,8 @@ przeniesione z Asystenta AI geoportalu MAIP i dostosowane do QGIS Desktop.
 """
 import json
 
+from .utils import public_fields
+
 SYSTEM_PROMPT = r"""
 Jesteś „GIS Assistant AI” – ekspertem QGIS 4 (oraz 3.x) i polskich danych przestrzennych (GUGiK, Geoportal,
 BDOT10k, PRG, EGiB/KIEG, ULDK, NMT, ortofotomapa). Działasz WEWNĄTRZ wtyczki QGIS, która potrafi
@@ -300,13 +302,9 @@ def revision_message(reason, plan, from_index, done_summary, ctx_json, extra="",
         "WYŁĄCZNIE nowe kroki od bieżącego miejsca do końca planu. Nadaj im NOWE identyfikatory w postaci "
         "\"r%d_1\", \"r%d_2\"…, a do wyników wykonanych kroków odwołuj się ich dotychczasowymi identyfikatorami."
         % (reason, extra, json.dumps(done_summary, ensure_ascii=False, indent=1),
-           json.dumps(_strip_private(remaining), ensure_ascii=False, indent=1), ctx_json, language,
+           json.dumps([public_fields(s) for s in remaining], ensure_ascii=False, indent=1), ctx_json, language,
            from_index + 1, from_index + 1)
     )
-
-
-def _strip_private(steps):
-    return [{k: v for k, v in s.items() if not k.startswith("_")} for s in steps]
 
 
 TEST_SYSTEM = 'Odpowiadasz wyłącznie JSON-em.'

@@ -94,6 +94,16 @@ class TestAnthropic:
         assert text == '{"type":"answer","text":"141805_2"}'
         assert p.searches == ["TERYT Lesznowola"] and len(p.continuation_content()) == 3
 
+    def test_unfinished_block_and_chars(self):
+        p = StreamParser("anthropic")
+        p.feed(sse({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": "Ab"}},
+                   {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "cd"}},
+                   {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ę"}}))
+        assert p.chars() == 5 and p.result_text() == "Abcdę"
+        assert p.continuation_content() == [{"type": "text", "text": "Abcdę"}]
+        p.complete(json.dumps({"content": [{"type": "text", "text": "xyz"}], "stop_reason": "end_turn"}))
+        assert p.chars() == 3
+
     def test_ignores_comments_and_garbage(self):
         p = StreamParser("anthropic")
         p.feed(b": keep-alive\n\nevent: ping\ndata: not json\n\ndata: [DONE]\n\ndata: 42\n\n")

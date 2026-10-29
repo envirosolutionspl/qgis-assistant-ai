@@ -97,6 +97,10 @@ class TestMatchLayers:
         assert svc.match_layers(self.layers, ["lotniska"]) == []
         assert svc.match_layers(self.layers, []) == []          # bez wskazania i kilka warstw – nie zgadujemy
 
+    def test_each_layer_picked_once(self):
+        picked = svc.match_layers(self.layers, ["ParkiNarodowe", "parki narodowe", "rezerwaty"])
+        assert [ly["name"] for ly in picked] == ["ParkiNarodowe", "Rezerwaty"]
+
 
 class TestUrls:
     def test_base_url_keeps_other_params(self):
@@ -183,6 +187,8 @@ class TestOverpassServers:
         assert svc.next_overpass_server(tried) is None
         fr = "https://overpass.openstreetmap.fr/api/interpreter"
         assert svc.next_overpass_server([fr]) == svc.OVERPASS_SERVERS[0]
+        # lz4 to węzeł serwera głównego – kolejny jest serwer zapasowy
+        assert svc.next_overpass_server(["https://lz4.overpass-api.de/api/interpreter"]) == svc.OVERPASS_SERVERS[1]
 
     def test_known(self):
         assert svc.known_overpass_server("https://overpass-api.de/api/interpreter")
@@ -240,3 +246,12 @@ class TestBdot10k:
         assert named == ["1418/OT_SKDR_L.gpkg", "1418/OT_SKDR_L.shp", "1418/PL.PZGiK.339.1418__OT_SKDR_L.xml"]
         assert gpkgs == ["1418/BDOT10k_1418.gpkg"]
         assert svc.bdot10k_members(names, "OT_BUBD_A") == ([], ["1418/OT_SKDR_L.gpkg", "1418/BDOT10k_1418.gpkg"])
+
+
+def test_xml_text_helper():
+    root = svc.ET.fromstring("<a><b>  x </b><c/><d>   </d></a>")
+    assert svc._text(root, "b") == "x"
+    assert svc._text(root, "c", "-") == "-"
+    assert svc._text(root, "d") == ""
+    assert svc._text(root, "brak", "-") == "-"
+    assert svc._text(None, "b", "-") == "-"

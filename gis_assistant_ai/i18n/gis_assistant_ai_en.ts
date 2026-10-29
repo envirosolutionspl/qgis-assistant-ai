@@ -1653,6 +1653,11 @@ e.g. “Create a 100 m buffer around schools in Piaseczno County”</translation
     </message>
     <message>
         <location filename="../mcp_server.py"/>
+        <source> (warstwa id: %s)</source>
+        <translation> (layer id: %s)</translation>
+    </message>
+    <message>
+        <location filename="../mcp_server.py"/>
         <source>Wykonano.</source>
         <translation>Done.</translation>
     </message>

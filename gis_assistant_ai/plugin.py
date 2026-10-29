@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover
 
 from .constants import ENV_MENU_NAME, ICON_PATH, LOG_TAG, PLUGIN_NAME
 from . import mcp_server
-from .settings import Settings
+from .settings import SecretStore, Settings
 from . import i18n
 from .i18n import tr
 
@@ -80,9 +80,14 @@ class GISAssistantAIPlugin:
                 self.toolbar.removeAction(self.action)
                 if not self.toolbar.actions():  # pasek usuwamy tylko, gdy nie używa go inna wtyczka ES
                     self.toolbar.deleteLater()
+            # akcja jest dzieckiem okna głównego – bez usunięcia (i rozłączenia) trzyma starą instancję wtyczki
+            try:
+                self.action.triggered.disconnect(self.toggle)
+            except (TypeError, RuntimeError):
+                pass
+            self.action.deleteLater()
             self.action = None
         self.toolbar = None
-        from .settings import SecretStore
         SecretStore.clear_session()
         i18n.uninstall()
 
@@ -95,9 +100,7 @@ class GISAssistantAIPlugin:
             self.dock.show()
             self.dock.raise_()
             return
-        visible = self.dock.isVisible() if checked is None else bool(checked)
-        if checked is None:
-            visible = not visible
+        visible = not self.dock.isVisible() if checked is None else bool(checked)
         self.dock.setVisible(visible)
         if visible:
             self.dock.raise_()

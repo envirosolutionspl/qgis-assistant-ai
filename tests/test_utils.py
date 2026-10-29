@@ -27,7 +27,7 @@ class TestExtractJson:
 
 class TestSanitizeSource:
     def test_password_and_user(self):
-        src = "dbname='gis' host=10.0.0.5 user='jan' password='Tajne123' sslmode=disable"
+        src = "dbname='gis' host=10.0.0.5 user='jan' password='Tajne123' sslmode=disable"  # pragma: allowlist secret
         out = utils.sanitize_source(src, "postgres")
         assert "Tajne123" not in out and "jan" not in out
 
@@ -85,3 +85,19 @@ class TestSafety:
 
 def test_plugin_slug():
     assert utils.plugin_slug_from_url("https://plugins.qgis.org/plugins/uldk_gugik/") == "uldk_gugik"
+
+
+def test_public_fields():
+    step = {"id": "s1", "action": "note", "_status": "done", "_error": "x"}
+    assert utils.public_fields(step) == {"id": "s1", "action": "note"}
+    assert "_status" in step                                           # oryginał bez zmian
+
+
+def test_extract_json_skips_invalid_object():
+    assert utils.extract_json('{"a": nie} a potem {"b": 2}') == {"b": 2}
+
+
+def test_md_links_restored():
+    html = utils.md_to_html("Zobacz [mapę](https://geoportal.gov.pl) i https://example.com/x")
+    assert "<a href='https://geoportal.gov.pl'" in html and ">mapę</a>" in html
+    assert "<a href='https://example.com/x'" in html and "\x00" not in html

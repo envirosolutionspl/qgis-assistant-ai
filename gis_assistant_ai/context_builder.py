@@ -13,6 +13,8 @@ from qgis.core import (
     Qgis,
     QgsApplication,
     QgsMapLayer,
+    QgsProcessingAlgorithm,
+    QgsProcessingParameterDefinition,
     QgsProject,
     QgsRasterLayer,
     QgsVectorLayer,
@@ -27,21 +29,63 @@ from .utils import sanitize_source
 _REMOTE_PROVIDERS = {"wfs", "oapif", "arcgisfeatureserver", "wms", "wcs", "arcgismapserver"}
 
 
+def qgis_flag(owner, new_path, old_name):
+    """Flaga w nowej (Qgis.*) albo starej konwencji API, np. Qgis.ProcessingParameterFlag istnieje dopiero
+    od QGIS 3.36 (wtyczka działa od 3.34)."""
+    try:
+        cur = Qgis
+        for part in new_path.split("."):
+            cur = getattr(cur, part)
+        return cur
+    except AttributeError:
+        return getattr(owner, old_name)
+
+
+# Flagi Processing ustalane raz (używa ich też executor.py)
+PARAM_OPTIONAL = qgis_flag(QgsProcessingParameterDefinition, "ProcessingParameterFlag.Optional", "FlagOptional")
+PARAM_HIDDEN = qgis_flag(QgsProcessingParameterDefinition, "ProcessingParameterFlag.Hidden", "FlagHidden")
+ALG_NO_THREADING = qgis_flag(QgsProcessingAlgorithm, "ProcessingAlgorithmFlag.NoThreading", "FlagNoThreading")
+
+
+def _string_types():
+    """Typy pól tekstowych: QVariant.String (Qt5) i QMetaType.Type.QString (QGIS ≥ 3.38, Qt6). W PyQt6 wyliczenia
+    nie są liczbami, więc porównanie z 10 tam nie działa."""
+    out = set()
+    try:
+        from qgis.PyQt.QtCore import QVariant
+        out.add(QVariant.String)
+    except (ImportError, AttributeError):  # PyQt6 nie ma QVariant.String
+        pass
+    try:
+        from qgis.PyQt.QtCore import QMetaType
+        out.add(QMetaType.Type.QString)
+    except (ImportError, AttributeError):
+        pass
+    return out
+
+
+_STRING_TYPES = _string_types()
+
+
 def layer_info(layer, with_fields=True, with_samples=False):
+    crs = layer.crs()
+    crs_valid = crs.isValid()
+    provider = layer.providerType()
+    valid = layer.isValid()
     info = {
         "id": layer.id(),
         "name": layer.name(),
-        "provider": layer.providerType(),
-        "crs": layer.crs().authid() if layer.crs().isValid() else None,
-        "source": sanitize_source(layer.source(), layer.providerType()),
+        "provider": provider,
+        "crs": crs.authid() if crs_valid else None,
+        "source": sanitize_source(layer.source(), provider),
     }
-    if layer.crs().isValid() and layer.crs().isGeographic():
+    if crs_valid and crs.isGeographic():
         info["crs_units"] = "stopnie"
-    if layer.isValid():
+    if valid:
         ext = layer_extent(layer)
         if ext:
             info["extent"] = ext
-    if not layer.isValid():
+    if not valid:
         info["valid"] = False  # np. brak połączenia z bazą – nie odpytujemy źródła
         if isinstance(layer, QgsVectorLayer):
             info["kind"] = "vector"
@@ -55,16 +99,18 @@ def layer_info(layer, with_fields=True, with_samples=False):
             info["feature_count"] = int(layer.featureCount())
         except Exception:  # noqa: BLE001
             info["feature_count"] = -1
-        if layer.selectedFeatureCount():
-            info["selected"] = layer.selectedFeatureCount()
-        if layer.subsetString():
-            info["filter"] = layer.subsetString()[:200]
+        selected = layer.selectedFeatureCount()
+        if selected:
+            info["selected"] = selected
+        subset = layer.subsetString()
+        if subset:
+            info["filter"] = subset[:200]
         if with_fields:
             fields = layer.fields()
             info["fields"] = ["%s (%s)" % (f.name(), f.typeName()) for f in list(fields)[:MAX_CONTEXT_FIELDS]]
             if fields.count() > MAX_CONTEXT_FIELDS:
                 info["fields_truncated"] = fields.count()
-            if with_samples and layer.providerType().lower() not in _REMOTE_PROVIDERS:
+            if with_samples and provider.lower() not in _REMOTE_PROVIDERS:
                 info["samples"] = _samples(layer)
     elif isinstance(layer, QgsRasterLayer):
         info["kind"] = "raster"
@@ -105,7 +151,7 @@ def _samples(layer, per_field=5, max_fields=15):
         if len(out) >= max_fields:
             break
         type_name = f.typeName().lower()
-        is_text = f.type() == 10 or any(t in type_name for t in ("char", "string", "text"))  # 10 = QString
+        is_text = f.type() in _STRING_TYPES or any(t in type_name for t in ("char", "string", "text"))
         if not is_text:
             continue
         try:
@@ -152,7 +198,6 @@ def build_context(iface, settings):
         layers.append(info)
     if len(nodes) > MAX_CONTEXT_LAYERS:
         ctx["layers_truncated"] = len(nodes)
-    ctx["layers"] = layers
     active = iface.activeLayer()
     ctx["active_layer"] = active.name() if isinstance(active, QgsMapLayer) else None
 
@@ -167,13 +212,15 @@ def build_context(iface, settings):
     except Exception:  # noqa: BLE001
         pass
 
-    text = json.dumps(ctx, ensure_ascii=False)
-    if len(text) > MAX_CONTEXT_CHARS:  # za duży projekt – skracamy opisy dalszych warstw
-        for info in ctx["layers"][10:]:
+    # warstwy celowo na końcu: context_json() ucina zbyt długi opis od końca – tracimy dalsze warstwy, a nie
+    # wersję QGIS, układ projektu czy listę algorytmów
+    ctx["layers"] = layers
+    # za duży projekt – skracamy opisy dalszych warstw (przy ≤ 10 warstwach nie ma czego skracać, więc bez json.dumps)
+    if len(layers) > 10 and len(json.dumps(ctx, ensure_ascii=False)) > MAX_CONTEXT_CHARS:
+        for info in layers[10:]:
             info.pop("fields", None)
             info.pop("samples", None)
             info.pop("source", None)
-    ctx["layers"] = ctx.pop("layers", [])
     return ctx
 
 
@@ -206,30 +253,19 @@ def plugin_algorithms(reg):
     return out
 
 
-def _optional(param):
-    try:
-        from qgis.core import Qgis
-        flag = Qgis.ProcessingParameterFlag.Optional
-    except AttributeError:
-        from qgis.core import QgsProcessingParameterDefinition
-        flag = QgsProcessingParameterDefinition.FlagOptional
+def _has_flag(param, flag):
     try:
         return bool(param.flags() & flag)
     except TypeError:
         return False
+
+
+def _optional(param):
+    return _has_flag(param, PARAM_OPTIONAL)
 
 
 def _hidden(param):
-    try:
-        from qgis.core import Qgis
-        flag = Qgis.ProcessingParameterFlag.Hidden
-    except AttributeError:
-        from qgis.core import QgsProcessingParameterDefinition
-        flag = QgsProcessingParameterDefinition.FlagHidden
-    try:
-        return bool(param.flags() & flag)
-    except TypeError:
-        return False
+    return _has_flag(param, PARAM_HIDDEN)
 
 
 def context_json(ctx):

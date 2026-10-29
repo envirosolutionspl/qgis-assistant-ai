@@ -66,3 +66,13 @@ def test_bdot10k_step_normalization():
     s1, s2 = out["steps"]
     assert s1["action"] == "bdot10k_layer" and s1["class"] == "OT_SKDR_L" and s1["teryt"] == "1418"
     assert s2["action"] == "bdot10k_layer" and s2["class"] == "" and s2["_warnings"]
+
+
+def test_alg_aliases_fix_select_by_location():
+    assert plan_model.ALG_ALIASES["qgis:selectbylocation"] == "native:selectbylocation"
+    assert all(k != v for k, v in plan_model.ALG_ALIASES.items())     # alias na samego siebie nic nie poprawia
+
+
+def test_service_types_shared_with_services():
+    from gis_assistant_ai import services
+    assert plan_model.SERVICE_TYPES is services.TYPES

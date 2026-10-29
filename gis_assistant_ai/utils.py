@@ -55,8 +55,8 @@ def _scan_object(t):
                         if isinstance(obj, dict):
                             return obj
                     except ValueError:
-                        break
-                    break
+                        pass
+                    break   # obiekt zamknięty, ale niepoprawny – szukamy od kolejnego „{”
         start = t.find("{", start + 1)
     return None
 
@@ -195,7 +195,7 @@ def _inline(s, link_color, code_bg):
                r"<code style='background:%s;font-family:Consolas,monospace;'>\1</code>" % code_bg, s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", s)
     for key, val in links.items():
-        s = s.replace(esc(key), val).replace(key, val)
+        s = s.replace(key, val)   # esc() nie zmienia znaczników „\x00n\x00”
     return s
 
 
@@ -210,6 +210,11 @@ def short_json(obj, limit=600):
     except (TypeError, ValueError):
         s = str(obj)
     return s if len(s) <= limit else s[:limit] + "…"
+
+
+def public_fields(step):
+    """Pola kroku bez wewnętrznych (``_status``, ``_error``…) – do promptu i MCP."""
+    return {k: v for k, v in step.items() if not k.startswith("_")}
 
 
 # Konstrukcje kodu Python o skutkach poza projektem QGIS (pliki, procesy, sieć, sekrety).

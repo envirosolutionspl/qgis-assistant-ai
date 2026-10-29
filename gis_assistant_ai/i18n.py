@@ -57,11 +57,6 @@ def qgis_language():
     return (qgis_locale() or SOURCE_LANGUAGE).split("_")[0].split("-")[0].lower()
 
 
-def active_language():
-    """Język, w którym faktycznie wyświetlany jest interfejs wtyczki."""
-    return _active
-
-
 def language_label(code=None):
     """Język dla modelu AI – ten sam co interfejs QGIS (nawet bez tłumaczenia wtyczki)."""
     code = code or qgis_language()

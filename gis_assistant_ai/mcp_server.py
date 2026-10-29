@@ -18,11 +18,11 @@ from qgis.PyQt.QtNetwork import QHostAddress, QTcpServer
 
 from . import mcp_protocol as proto
 from .constants import LOG_TAG
-from .context_builder import build_context, layer_info
+from .context_builder import PARAM_OPTIONAL, build_context, layer_info
 from .executor import PlanExecutor
 from .i18n import qgis_language, tr
 from .plan_model import normalize, validate
-from .utils import short_json
+from .utils import sanitize_source, short_json
 
 MCP_TOOL_TIMEOUT_S = 20 * 60        # najdłuższe kroki: pobranie paczki BDOT10k, duże algorytmy
 MCP_DEFAULT_PORT = 8765
@@ -134,8 +134,10 @@ class _ToolRun(QObject):
             self._finish(proto.tool_text(tr("Wykonanie przerwane.") + self._log_tail(), is_error=True))
             return
         summary = self.executor.done_summary()
+        steps_by_id = {s.get("id"): s for s in self.executor.steps}
         lines = []
-        for item, step in zip(summary, [s for s in self.executor.steps if s.get("_status") in ("done", "skipped")]):
+        for item in summary:
+            step = steps_by_id.get(item.get("id")) or {}
             out = item.get("output_layer") or {}
             lyr = QgsProject.instance().mapLayer(out.get("id") or "") if out else None
             if lyr is not None and hasattr(lyr, "fields"):
@@ -143,7 +145,7 @@ class _ToolRun(QObject):
             item["result"] = step.get("_result_text", "")
             line = "%s: %s" % (item.get("title", ""), item["result"] or item.get("status", ""))
             if out.get("id"):
-                line += " (warstwa id: %s)" % out["id"]
+                line += tr(" (warstwa id: %s)") % out["id"]
             lines.append(line)
         text = "\n".join(lines) or tr("Wykonano.")
         if self.warnings:
@@ -182,6 +184,7 @@ class McpServer(QObject):
         self._server = None
         self._buffers = {}
         self._active = None
+        self._token = None          # token w pamięci (odczyt z ustawień przy każdym żądaniu jest zbędny)
         self._dispatcher = proto.Dispatcher(self._call_tool, plugin_version(), instructions(), qgis_language())
 
     # -- cykl życia
@@ -194,21 +197,25 @@ class McpServer(QObject):
         return self._server.serverPort() if self.running else None
 
     def token(self):
-        tok = self.settings.value("mcp/token", "", str)
-        if not tok:
-            tok = self.renew_token()
-        return tok
+        if not self._token:
+            self._token = self.settings.value("mcp/token", "", str) or self.renew_token()
+        return self._token
 
     def renew_token(self):
         tok = secrets.token_urlsafe(24)
         self.settings.set_value("mcp/token", tok)
+        self._token = tok
         return tok
 
-    def url(self):
-        return "http://127.0.0.1:%d/mcp" % (self.port or self.settings.value("mcp/port", MCP_DEFAULT_PORT, int))
+    def url(self, port=None):
+        """Adres serwera; port podany jawnie (np. z pola w ustawieniach) ma pierwszeństwo przed bieżącym."""
+        if port is None:
+            port = self.port or self.settings.value("mcp/port", MCP_DEFAULT_PORT, int)
+        return "http://127.0.0.1:%d/mcp" % int(port)
 
     def apply_settings(self):
         """Uruchamia / zatrzymuje / restartuje serwer zgodnie z ustawieniami (mcp/enabled, mcp/port)."""
+        self._token = None          # token mógł zostać zmieniony w ustawieniach – odczytamy go ponownie
         enabled = self.settings.value("mcp/enabled", False, bool)
         port = self.settings.value("mcp/port", MCP_DEFAULT_PORT, int)
         if not enabled:
@@ -236,14 +243,16 @@ class McpServer(QObject):
         return True
 
     def stop(self):
+        # najpierw odpowiedź dla trwającego wywołania (gniazdo jeszcze istnieje), potem zamknięcie serwera
+        if self._active is not None and not self._active.done:
+            self._active._reject(tr("Serwer MCP zatrzymany."))
+        self._active = None
         if self._server is not None:
             self._server.close()
             self._server.deleteLater()
             self._server = None
             self.stateChanged.emit(False, tr("Serwer MCP zatrzymany."))
-        if self._active is not None and not self._active.done:
-            self._active._reject(tr("Serwer MCP zatrzymany."))
-        self._active = None
+        self._buffers.clear()
 
     # -- transport
     def _on_connection(self):
@@ -271,14 +280,18 @@ class McpServer(QObject):
             return
         method, path, headers, body, _used = parsed
         self._buffers[sock] = bytearray()
-        if path.split("?")[0] == "/health":
+        path = path.split("?")[0]
+        if not proto.origin_allowed(headers):   # strona WWW w przeglądarce (DNS rebinding) – odrzucamy
+            self._send(sock, proto.http_response(403, {"error": "forbidden origin"}))
+            return
+        if path == "/health":
             self._send(sock, proto.http_response(200, {"ok": True, "name": proto.SERVER_NAME,
                                                        "qgis": Qgis.version(), "plugin": plugin_version()}))
             return
         if not proto.authorized(headers, self.token()):
             self._send(sock, proto.http_response(401, {"error": "unauthorized"}))
             return
-        if path.split("?")[0] != "/mcp":
+        if path != "/mcp":
             self._send(sock, proto.http_response(404, {"error": "not found"}))
             return
         if method == "DELETE":
@@ -320,7 +333,8 @@ class McpServer(QObject):
 
     # -- narzędzia
     def _call_tool(self, name, args, respond):
-        _log("info", tr("Wywołanie narzędzia %s: %s") % (name, short_json(args, 400)))
+        # adresy w argumentach (uri, url) mogą zawierać hasła/tokeny – do dziennika trafiają oczyszczone
+        _log("info", tr("Wywołanie narzędzia %s: %s") % (name, sanitize_source(short_json(args, 400))))
         sync = {"qgis_context": self._tool_context, "layer_info": self._tool_layer_info,
                 "list_algorithms": self._tool_list_algorithms, "algorithm_help": self._tool_algorithm_help,
                 "set_layer_style": self._tool_set_layer_style}
@@ -335,12 +349,11 @@ class McpServer(QObject):
             respond(proto.tool_text(tr("QGIS wykonuje jeszcze poprzednie polecenie – spróbuj ponownie za chwilę."),
                                     is_error=True))
             return
-        if name == "run_plan":
-            plan = proto.plan_from_args(args)
-        else:
-            step = proto.tool_to_step(name, args)
-            plan = {"type": "plan", "title": name, "steps": [step]}
         try:
+            if name == "run_plan":
+                plan = proto.plan_from_args(args)
+            else:
+                plan = {"type": "plan", "title": name, "steps": [proto.tool_to_step(name, args)]}
             plan = normalize(plan)
             forbidden = [s["action"] for s in plan["steps"] if s["action"] in proto.MCP_FORBIDDEN_ACTIONS]
             if forbidden:
@@ -358,9 +371,13 @@ class McpServer(QObject):
         run.start()
 
     # -- narzędzia synchroniczne
+    def _samples_allowed(self, requested):
+        """Wartości atrybutów tylko wtedy, gdy użytkownik zgodził się na ich wysyłanie (ustawienie send_samples)."""
+        return bool(requested) and self.settings.value("send_samples", False, bool)
+
     def _tool_context(self, args):
         ctx = build_context(self.iface, self.settings)
-        if args.get("samples"):
+        if self._samples_allowed(args.get("samples")):
             for info in ctx.get("layers", []):
                 lyr = QgsProject.instance().mapLayer(info.get("id", ""))
                 if lyr is not None:
@@ -373,7 +390,7 @@ class McpServer(QObject):
         lyr = _find_layer(args.get("layer"))
         if lyr is None:
             return proto.tool_text(tr("Nie znaleziono warstwy: %s") % args.get("layer"), is_error=True)
-        info = layer_info(lyr, True, bool(args.get("samples", True)))
+        info = layer_info(lyr, True, self._samples_allowed(args.get("samples", True)))
         return proto.tool_text(json.dumps(info, ensure_ascii=False, indent=1), structured=info)
 
     def _tool_list_algorithms(self, args):
@@ -395,7 +412,7 @@ class McpServer(QObject):
         params = []
         for p in alg.parameterDefinitions():
             item = {"name": p.name(), "type": p.type(), "description": p.description(),
-                    "optional": bool(p.flags() & _optional_flag()), "default": _jsonable(p.defaultValue())}
+                    "optional": bool(p.flags() & PARAM_OPTIONAL), "default": _jsonable(p.defaultValue())}
             if hasattr(p, "options"):
                 try:
                     item["options"] = {i: o for i, o in enumerate(p.options())}
@@ -429,35 +446,21 @@ class McpServer(QObject):
             if symbol is None:
                 skipped.append(key)
                 continue
-            if key == "fill_color":
-                color = QColor(str(args[key]))
-                if not color.isValid():
+            if key in ("fill_color", "stroke_color"):
+                color = _parse_color(args[key])
+                if color is None:
                     return proto.tool_text(tr("Nieprawidłowy kolor: %s") % args[key], is_error=True)
-                symbol.setColor(color)
-                changes.append(tr("kolor %s") % color.name())
-            elif key == "stroke_color":
-                color = QColor(str(args[key]))
-                if not color.isValid():
-                    return proto.tool_text(tr("Nieprawidłowy kolor: %s") % args[key], is_error=True)
-                if symbol.type() == _symbol_type("Line"):
+                if key == "fill_color":
                     symbol.setColor(color)
+                    changes.append(tr("kolor %s") % color.name())
                 else:
-                    for i in range(symbol.symbolLayerCount()):
-                        sl = symbol.symbolLayer(i)
-                        if hasattr(sl, "setStrokeColor"):
-                            sl.setStrokeColor(color)
-                changes.append(tr("obrys %s") % color.name())
+                    _set_stroke(symbol, color=color)
+                    changes.append(tr("obrys %s") % color.name())
             elif key == "stroke_width":
                 width = float(args[key])
-                if symbol.type() == _symbol_type("Line"):
-                    symbol.setWidth(width)
-                else:
-                    for i in range(symbol.symbolLayerCount()):
-                        sl = symbol.symbolLayer(i)
-                        if hasattr(sl, "setStrokeWidth"):
-                            sl.setStrokeWidth(width)
+                _set_stroke(symbol, width=width)
                 changes.append(tr("szerokość obrysu %.2f mm") % width)
-            elif key == "size" and symbol.type() == _symbol_type("Marker"):
+            elif key == "size" and symbol.type() == Qgis.SymbolType.Marker:
                 symbol.setSize(float(args[key]))
                 changes.append(tr("rozmiar %.2f mm") % float(args[key]))
             else:
@@ -501,13 +504,26 @@ def set_instance(server):
     _instance = server
 
 
-def _symbol_type(name):
-    """Qgis.SymbolType.Marker/Line/Fill (QGIS ≥ 3.30) albo QgsSymbol.Marker/Line/Fill (starsze)."""
-    try:
-        return getattr(Qgis.SymbolType, name)
-    except AttributeError:
-        from qgis.core import QgsSymbol
-        return getattr(QgsSymbol, name)
+def _parse_color(value):
+    """QColor z tekstu (#rrggbb, nazwa CSS) albo None, gdy kolor jest nieprawidłowy."""
+    color = QColor(str(value))
+    return color if color.isValid() else None
+
+
+def _set_stroke(symbol, color=None, width=None):
+    """Kolor/szerokość: dla symbolu liniowego – samej linii, dla poligonów i punktów – obrysu warstw symbolu."""
+    if symbol.type() == Qgis.SymbolType.Line:
+        if color is not None:
+            symbol.setColor(color)
+        if width is not None:
+            symbol.setWidth(width)
+        return
+    for i in range(symbol.symbolLayerCount()):
+        sl = symbol.symbolLayer(i)
+        if color is not None and hasattr(sl, "setStrokeColor"):
+            sl.setStrokeColor(color)
+        if width is not None and hasattr(sl, "setStrokeWidth"):
+            sl.setStrokeWidth(width)
 
 
 def _find_layer(ref):
@@ -518,14 +534,6 @@ def _find_layer(ref):
         found = prj.mapLayersByName(ref)
         lyr = found[0] if found else None
     return lyr
-
-
-def _optional_flag():
-    try:
-        return Qgis.ProcessingParameterFlag.Optional
-    except AttributeError:
-        from qgis.core import QgsProcessingParameterDefinition
-        return QgsProcessingParameterDefinition.FlagOptional
 
 
 def _jsonable(v):
@@ -551,7 +559,6 @@ def python_for_bridge():
         # instalacja QGIS: <root>\bin\qgis-bin.exe lub <root>\bin\python.exe → <root>\apps\Python3NN
         root = os.path.dirname(os.path.dirname(exe))
         for d in (os.path.join(root, "apps", "Python3%d" % sys.version_info.minor),
-                  os.path.join(root, "apps", "Python3%d%d" % (sys.version_info.major, sys.version_info.minor)),
                   os.path.join(sys.prefix or "", ""), os.path.dirname(sys.executable or "")):
             if d:
                 candidates += [os.path.join(d, "python%s.exe" % w), os.path.join(d, "python.exe")]
@@ -565,7 +572,8 @@ def python_for_bridge():
     return "python3" if os.name != "nt" else "python"
 
 
-def config_snippet(server):
-    return json.dumps(proto.claude_desktop_config(python_for_bridge(), bridge_path(), server.url(),
+def config_snippet(server, port=None):
+    """Fragment claude_desktop_config.json; port (np. wartość z pola w ustawieniach) zastępuje bieżący port."""
+    return json.dumps(proto.claude_desktop_config(python_for_bridge(), bridge_path(), server.url(port),
                                                   server.token(), lang=qgis_language()), ensure_ascii=False, indent=2)
 

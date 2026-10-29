@@ -2,8 +2,9 @@
 """Normalizacja i walidacja odpowiedzi modelu."""
 import difflib
 
-from .utils import extract_json, find_refs
+from .utils import extract_json, find_refs, public_fields
 from .i18n import tr
+from .services import TYPES as SERVICE_TYPES
 
 VALID_TYPES = {"plan", "tool", "answer", "clarify", "plan_revision"}
 ACTIONS = {"processing", "load_layer", "uldk_boundary", "user_action", "zoom",
@@ -21,7 +22,6 @@ ACTION_ALIASES = {
     "add_wms": "add_service", "add_wfs": "add_service", "add_wmts": "add_service", "add_wcs": "add_service",
     "service": "add_service", "web_service": "add_service", "add_web_service": "add_service",
 }
-SERVICE_TYPES = ("wms", "wmts", "wfs", "wcs")
 # Częste pomyłki modeli w identyfikatorach algorytmów
 ALG_ALIASES = {
     "qgis:buffer": "native:buffer", "qgis:centroids": "native:centroids", "qgis:clip": "native:clip",
@@ -32,7 +32,7 @@ ALG_ALIASES = {
     "qgis:mergevectorlayers": "native:mergevectorlayers", "qgis:fieldcalculator": "native:fieldcalculator",
     "qgis:joinattributesbylocation": "native:joinattributesbylocation",
     "native:selectbyexpression": "qgis:selectbyexpression", "native:selectbyattribute": "qgis:selectbyattribute",
-    "native:selectbylocation": "native:selectbylocation", "qgis:countpointsinpolygon": "native:countpointsinpolygon",
+    "qgis:selectbylocation": "native:selectbylocation", "qgis:countpointsinpolygon": "native:countpointsinpolygon",
     "qgis:fixgeometries": "native:fixgeometries", "qgis:multiparttosingleparts": "native:multiparttosingleparts",
 }
 
@@ -132,30 +132,41 @@ def validate(obj):
     """Sprawdza algorytmy w rejestrze Processing i referencje między krokami."""
     from qgis.core import QgsApplication
     reg = QgsApplication.processingRegistry()
-    all_ids = [a.id() for a in reg.algorithms()]
+    cache = {}
+
+    def all_ids():
+        # lista całego rejestru tylko wtedy, gdy identyfikator trzeba poprawiać (zwykle wszystkie są poprawne)
+        if "ids" not in cache:
+            cache["ids"] = [a.id() for a in reg.algorithms()]
+        return cache["ids"]
 
     def fix_alg(alg_id):
         if not alg_id:
             return None, tr("Brak identyfikatora algorytmu.")
         if reg.algorithmById(alg_id):
             return alg_id, None
+
+        def fixed(new_id):
+            return new_id, tr("Poprawiono identyfikator %s → %s.") % (alg_id, new_id)
+
         alias = ALG_ALIASES.get(alg_id.lower())
         if alias and reg.algorithmById(alias):
-            return alias, tr("Poprawiono identyfikator %s → %s.") % (alg_id, alias)
-        if ":" in alg_id:
-            prov, name = alg_id.split(":", 1)
+            return fixed(alias)
+        has_prov = ":" in alg_id
+        prov, name = alg_id.split(":", 1) if has_prov else ("", alg_id)
+        if has_prov:
             for other in ("native", "qgis", "gdal"):
                 cand = "%s:%s" % (other, name)
                 if other != prov and reg.algorithmById(cand):
-                    return cand, tr("Poprawiono identyfikator %s → %s.") % (alg_id, cand)
-        close = difflib.get_close_matches(alg_id, all_ids, n=1, cutoff=0.88)
+                    return fixed(cand)
+        close = difflib.get_close_matches(alg_id, all_ids(), n=1, cutoff=0.88)
         if close:
-            return close[0], tr("Poprawiono identyfikator %s → %s.") % (alg_id, close[0])
-        prov = alg_id.split(":", 1)[0].lower() if ":" in alg_id else ""
-        same = [a for a in all_ids if prov and a.lower().startswith(prov + ":")]
+            return fixed(close[0])
+        prov = prov.lower()
+        same = [a for a in all_ids() if prov and a.lower().startswith(prov + ":")]
         best = best_match(alg_id, same)
         if best:
-            return best, tr("Poprawiono identyfikator %s → %s.") % (alg_id, best)
+            return fixed(best)
         if prov and not same:
             return alg_id, tr("Algorytm „%s” pochodzi z wtyczki, która nie jest zainstalowana lub włączona "
                               "(dostawca Processing „%s”).") % (alg_id, prov)
@@ -170,7 +181,7 @@ def validate(obj):
                     s["algorithm"] = new_id
                 if warn:
                     s.setdefault("_warnings", []).append(warn)
-            missing = find_refs({k: v for k, v in s.items() if not k.startswith("_")}) - known
+            missing = find_refs(public_fields(s)) - known
             if missing and obj.get("type") == "plan":
                 s.setdefault("_warnings", []).append(
                     tr("Odwołanie do nieznanego kroku: %s.") % ", ".join(sorted(missing)))
