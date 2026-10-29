@@ -1,12 +1,19 @@
 # GIS Assistant AI
 
+[![Tests](https://github.com/envirosolutionspl/qgis-assistant-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/envirosolutionspl/qgis-assistant-ai/actions/workflows/tests.yml)
+[![Qt5 and Qt6 compatibility](https://github.com/envirosolutionspl/qgis-assistant-ai/actions/workflows/qt5-qt6-compat.yml/badge.svg)](https://github.com/envirosolutionspl/qgis-assistant-ai/actions/workflows/qt5-qt6-compat.yml)
+[![Security and quality](https://github.com/envirosolutionspl/qgis-assistant-ai/actions/workflows/security_and_quality.yml/badge.svg)](https://github.com/envirosolutionspl/qgis-assistant-ai/actions/workflows/security_and_quality.yml)
+[![Release](https://img.shields.io/github/v/release/envirosolutionspl/qgis-assistant-ai)](https://github.com/envirosolutionspl/qgis-assistant-ai/releases/latest)
+
+[English version below](#en)
+
 ## PL
 Wtyczka QGIS z asystentem AI. W panelu wtyczki opisujesz językiem naturalnym, co chcesz zrobić w QGIS (np. „Stwórz bufor o promieniu 100 metrów od szkół w powiecie piaseczyńskim”), a wtyczka wskazuje odpowiednie narzędzie albo przygotowuje plan działań krok po kroku i wykonuje go po kliknięciu „WYKONAJ”.
 
-Aktualna wersja: **0.4.3**. Od wersji 0.4 odpowiedzi AI przesyłane są strumieniowo (bez przerywania długich zapytań), asystent korzysta także z algorytmów zainstalowanych wtyczek (np. QuickOSM – dane OpenStreetMap), a działania o skutkach poza projektem QGIS wymagają zgody użytkownika.
+Odpowiedzi AI przesyłane są strumieniowo, asystent korzysta także z algorytmów zainstalowanych wtyczek (np. QuickOSM – dane OpenStreetMap), a działania o skutkach poza projektem QGIS wymagają zgody użytkownika. QGIS można też udostępnić aplikacji Claude Desktop jako serwer MCP.
 
 ## Instrukcja pobrania:
-1. Wtyczkę należy zainstalować w QGIS jako ZIP (Wtyczki -> Zarządzanie wtyczkami -> Zainstaluj z pliku ZIP) lub wgrać katalog `gis_assistant_ai` do lokalizacji `C:\Users\User\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins`.
+1. Pobierz plik `gis_assistant_ai-<wersja>.zip` z najnowszego [wydania](https://github.com/envirosolutionspl/qgis-assistant-ai/releases/latest) i zainstaluj go w QGIS (Wtyczki -> Zarządzanie wtyczkami -> Zainstaluj z pliku ZIP) lub wgraj katalog `gis_assistant_ai` do lokalizacji `C:\Users\User\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins`.
 2. Aby uruchomić wtyczkę, należy kliknąć na ikonę turkusowego drzewa na pasku narzędzi EnviroSolutions lub użyć skrótu `Ctrl+Alt+A`.
 3. Jeżeli ikona wtyczki nie jest widoczna na pasku narzędzi, spróbuj zrestartować QGIS.
 4. Jeżeli wtyczka nadal nie jest widoczna, należy przejść w QGIS Desktop do Wtyczki -> Zarządzanie wtyczkami -> Zainstalowane -> GIS Assistant AI -> Odinstalować wtyczkę i zainstalować ponownie.
@@ -32,6 +39,9 @@ Aktualna wersja: **0.4.3**. Od wersji 0.4 odpowiedzi AI przesyłane są strumien
 - Wczytanie lokalnego pliku lub bazy danych – zawsze po potwierdzeniu przez użytkownika
 - Krótki skrypt PyQGIS – tylko po włączeniu tej opcji w ustawieniach i zatwierdzeniu kodu
 
+### Serwer MCP (Claude Desktop):
+Po włączeniu w ustawieniach wtyczki („Serwer MCP (Claude Desktop)”) QGIS udostępnia aplikacji Claude Desktop narzędzia: opis projektu, pola warstw, wyszukiwanie i parametry algorytmów, Processing, wczytywanie warstw i usług, ULDK, BDOT10k, styl warstwy i plan wielokrokowy. Serwer nasłuchuje tylko na `127.0.0.1` i wymaga tokenu; konfigurację do wklejenia w `claude_desktop_config.json` kopiuje przycisk w ustawieniach. Szczegóły: [DEVELOPMENT.md](DEVELOPMENT.md#serwer-mcp-claude-desktop).
+
 ### Obsługiwani dostawcy modeli AI:
 - Anthropic Claude – wymagany klucz API z Claude Console
 - OpenAI lub serwer zgodny z API OpenAI – wymagany klucz API
@@ -53,10 +63,15 @@ Interfejs wtyczki i odpowiedzi asystenta są w języku ustawionym w QGIS (Ustawi
 * Otwierając projekty i dane z nieznanych źródeł, należy pamiętać, że nazwy warstw i pól trafiają do modelu i mogą zawierać ukryte polecenia dla AI.
 * Kroki korzystające z algorytmów innych wtyczek (np. QuickOSM) wymagają, aby dana wtyczka była zainstalowana i włączona – w przeciwnym razie asystent zaproponuje jej instalację.
 * Publiczne usługi zewnętrzne (np. serwer Overpass używany przez QuickOSM) bywają przeciążone. Błąd typu „Gateway Timeout” nie jest błędem wtyczki – wystarczy po chwili kliknąć „Ponów”.
-* Wtyczka ma status eksperymentalny.
 
 ## Przykład użycia
 ![Przykład użycia](docs/przyklad_uzycia.gif)
+
+## Dla programistów
+Budowa wtyczki, testy, standard kodu i tworzenie wydań: [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Licencja
+GNU GPL v3 – © 2026 EnviroSolutions Sp. z o.o. (plik [LICENSE](LICENSE)).
 
 ## Kontakt
 
@@ -66,10 +81,10 @@ Wtyczka została stworzona przez **EnviroSolutions**. W razie pytań lub potrzeb
 ## EN
 A QGIS plugin with an AI assistant. In the plugin panel you describe in plain language what you want to do in QGIS (e.g. “Create a 100 m buffer around schools in Piaseczno County”), and the plugin points you to the right tool or prepares a step-by-step action plan and carries it out when you click “RUN”.
 
-Current version: **0.4.3**. From version 0.4, AI responses are streamed (long requests are no longer cut off), the assistant also uses algorithms of installed plugins (e.g. QuickOSM – OpenStreetMap data), and actions with effects outside the QGIS project require user consent.
+AI responses are streamed, the assistant also uses algorithms of installed plugins (e.g. QuickOSM – OpenStreetMap data), and actions with effects outside the QGIS project require user consent. QGIS can also be exposed to the Claude Desktop app as an MCP server.
 
 ## Download Instructions:
-1. The plugin should be installed in QGIS as a ZIP (Plugins -> Manage and Install Plugins -> Install from ZIP) or by copying the `gis_assistant_ai` folder to the location `C:\Users\User\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins`.
+1. Download `gis_assistant_ai-<version>.zip` from the latest [release](https://github.com/envirosolutionspl/qgis-assistant-ai/releases/latest) and install it in QGIS (Plugins -> Manage and Install Plugins -> Install from ZIP), or copy the `gis_assistant_ai` folder to the location `C:\Users\User\AppData\Roaming\QGIS\QGIS3\profiles\default\python\plugins`.
 2. To launch the plugin, click on the turquoise tree icon on the EnviroSolutions toolbar or use the `Ctrl+Alt+A` shortcut.
 3. If the plugin icon is not visible on the toolbar, try restarting QGIS.
 4. If the plugin is still not visible, go to QGIS Desktop -> Plugins -> Manage and Install Plugins -> Installed -> GIS Assistant AI -> Uninstall the plugin and reinstall it.
@@ -95,6 +110,9 @@ Current version: **0.4.3**. From version 0.4, AI responses are streamed (long re
 - Loading a local file or database – always after user confirmation
 - A short PyQGIS script – only when enabled in the settings and after approving the code
 
+### MCP server (Claude Desktop):
+When enabled in the plugin settings (“MCP server (Claude Desktop)”), QGIS offers tools to the Claude Desktop app: project description, layer fields, algorithm search and parameters, Processing, loading layers and services, ULDK, BDOT10k, layer style and a multi-step plan. The server listens on `127.0.0.1` only and requires a token; a button in the settings copies the configuration to paste into `claude_desktop_config.json`. Details (in Polish): [DEVELOPMENT.md](DEVELOPMENT.md#serwer-mcp-claude-desktop).
+
 ### Supported AI model providers:
 - Anthropic Claude – requires an API key from the Claude Console
 - OpenAI or an OpenAI-compatible server – requires an API key
@@ -116,10 +134,15 @@ The plugin interface and the assistant's answers use the language set in QGIS (S
 * When opening projects and data from unknown sources, remember that layer and field names are sent to the model and may contain hidden instructions for the AI.
 * Steps that use algorithms of other plugins (e.g. QuickOSM) require that plugin to be installed and enabled – otherwise the assistant will suggest installing it.
 * Public external services (e.g. the Overpass server used by QuickOSM) can be overloaded. An error such as “Gateway Timeout” is not a plugin error – just click “Retry” after a moment.
-* The plugin is experimental.
 
 ## Example usage
 ![Example usage](docs/przyklad_uzycia.gif)
+
+## For developers
+Plugin structure, tests, code standard and releases (in Polish): [DEVELOPMENT.md](DEVELOPMENT.md).
+
+## Licence
+GNU GPL v3 – © 2026 EnviroSolutions Sp. z o.o. (see [LICENSE](LICENSE)).
 
 ## Contact
 

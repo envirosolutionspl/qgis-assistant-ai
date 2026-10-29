@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported QGIS in the Docker images (Qt 5), current LTR,
+        # current stable (Qt 6) and the development version.
+        qgis: ["3.40", "ltr", "stable", "latest"]
+    container:
+      image: qgis/qgis:${{ matrix.qgis }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pytest
+        run: |
+          python3 -m pip install --break-system-packages pytest \
+            || python3 -m pip install pytest
+
+      - name: Run the tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: bash
+        # Failures also go to an annotation, which shows on the run page.
+        run: |
+          python3 -m pytest -v -p no:cacheprovider 2>&1 \
+            | tee test.log; status=${PIPESTATUS[0]}
+          [ "$status" -eq 0 ] && exit 0
+          report=$(sed -n '/= FAILURES =/,$p' test.log | head -c 4000)
+          report=${report//'%'/'%25'}
+          echo "::error title=Tests::${report//$'\n'/'%0A'}"
+          exit 1

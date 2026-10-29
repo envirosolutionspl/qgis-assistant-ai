@@ -19,11 +19,10 @@ ponowić, pominąć krok lub przerwać plan.
 
 ## Instalacja
 
-1. QGIS: *Wtyczki › Zarządzaj wtyczkami › Zainstaluj z pliku ZIP* → wskaż `GIS_Assistant_AI.zip`.
+1. QGIS: *Wtyczki › Zarządzaj wtyczkami › Zainstaluj z pliku ZIP* → wskaż `gis_assistant_ai-<wersja>.zip`
+   z [wydań na GitHubie](https://github.com/envirosolutionspl/qgis-assistant-ai/releases).
    Jeśli masz starszą wersję (katalog `asystent_ai` lub `gis_assistant`), najpierw ją odinstaluj – ustawienia i klucz API zostaną zachowane.
-2. Ponieważ wtyczka jest oznaczona jako eksperymentalna, w zakładce *Ustawienia* menedżera wtyczek
-   można włączyć „Pokaż także wtyczki eksperymentalne” (niepotrzebne przy instalacji z ZIP).
-3. Panel otworzysz z paska/menu **EnviroSolutions › GIS Assistant AI** lub skrótem **Ctrl+Alt+A**.
+2. Panel otworzysz z paska/menu **EnviroSolutions › GIS Assistant AI** lub skrótem **Ctrl+Alt+A**.
 
 Wymagania: QGIS 3.34 – 4.x (Qt5 i Qt6, `supportsQt6=True`), dostęp do internetu
 (lub lokalny serwer Ollama).
@@ -174,22 +173,36 @@ gis_assistant_ai/
 ├── services.py          – GetCapabilities, dobór warstw usług, dane spod adresu, Overpass (bez zależności od QGIS)
 ├── settings.py          – ustawienia i bezpieczne przechowywanie klucza
 ├── i18n.py, i18n/       – wybór języka wg QGIS i pliki tłumaczeń (.ts/.qm)
-├── tests/               – testy jednostkowe (pytest), ruff.toml – standard kodu
 └── utils.py
+```
+
+Poza katalogiem wtyczki (nie trafiają do ZIP-a):
+
+```
+tests/                   – testy (pytest); część z QGIS pomijana, gdy nie da się zaimportować qgis
+scripts/package.py       – buduje dist/gis_assistant_ai-<wersja>.zip
+docs/                    – materiały do README (animacja z przykładem użycia)
+.github/workflows/       – testy w QGIS 3.40/LTR/stable/latest, zgodność Qt5/Qt6, flake8 + Bandit + detect-secrets, wydanie
 ```
 
 ## Rozwój
 
-* Standard kodu: `ruff check .` (konfiguracja w `ruff.toml`, długość linii 120).
-* Testy jednostkowe modułów niezależnych od QGIS (`utils`, `plan_model`, `services`): w katalogu nadrzędnym
-  wtyczki uruchom `pytest gis_assistant_ai/tests`.
-* Tłumaczenia: `i18n/gis_assistant_ai_en.ts` (Qt Linguist) → `lrelease`.
+* Standard kodu: PEP 8, linie do 79 znaków, docstringi (PEP 257):
+  `flake8 .` (konfiguracja w `setup.cfg`; wymaga `pip install flake8 flake8-docstrings pep8-naming`).
+  Wyjątek: treść instrukcji dla modelu w `prompts.py` nie jest łamana do 79 znaków (E501), żeby dało się ją czytać
+  i edytować jako jeden tekst.
+* Testy: w katalogu repozytorium `pytest`. Moduły niezależne od QGIS (`utils`, `plan_model`, `services`,
+  `stream`, `mcp_protocol`, `mcp_bridge`) testowane są zawsze; testy wymagające QGIS (kontekst projektu,
+  executor) uruchamiają się, gdy Python widzi pakiet `qgis` – w CI w obrazach `qgis/qgis`.
+* Tłumaczenia: `i18n/gis_assistant_ai_en.ts` (Qt Linguist) → `lrelease`. Tekst przekazywany do `tr()` jest
+  kluczem tłumaczenia – zmiana treści wymaga aktualizacji `.ts` i ponownej kompilacji `.qm`.
+* Nowa wersja: podnieś `version=` w `metadata.txt`, dopisz wpis na początku `changelog=`, zbuduj ZIP
+  (`python scripts/package.py`), a po wypchnięciu zmian utwórz tag `v<wersja>` – workflow *Release*
+  sprawdzi zgodność tagu z `metadata.txt` i opublikuje ZIP w wydaniu na GitHubie.
 
-## Do uzupełnienia przed publikacją
+## Do uzupełnienia
 
-* `metadata.txt` – adresy `tracker` i `repository` są tymczasowe (repozytorium jeszcze nie istnieje).
-* Logo EnviroSolutions w środku stopki: `img/es_logo.png` (ścieżka `FOOTER_LOGO_PATH` w `constants.py`).
-* Lista modeli w `constants.py` – zaktualizuj według aktualnej oferty dostawców.
+* Lista modeli w `constants.py` – aktualizuj według bieżącej oferty dostawców.
 
 ## Licencja
 
