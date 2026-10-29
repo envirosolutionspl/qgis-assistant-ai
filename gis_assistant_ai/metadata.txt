@@ -3,7 +3,7 @@ name=GIS Assistant AI
 qgisMinimumVersion=3.34
 qgisMaximumVersion=4.99
 description=PL: GIS Assistant AI to asystent AI dla QGIS: opisz zadanie językiem naturalnym, a wtyczka wskaże narzędzie albo przygotuje i wykona plan działań krok po kroku. EN: AI assistant for QGIS – describe a task in plain language and get the right tool or an executable step-by-step plan.
-version=1.0.1
+version=1.0.2
 author=EnviroSolutions Sp. z o.o.
 email=gis@envirosolutions.pl
 
@@ -34,7 +34,11 @@ server=False
 hasProcessingProvider=no
 supportsQt6=True
 
-changelog=1.0.1 – PL: serwer MCP: algorytmy Processing uruchamiane przez Claude zapisują wyniki tylko do warstw
+changelog=1.0.2 – PL: serwer MCP: narzędzie load_layer nie wczytuje plików ani baz danych z dysku – użytkownik
+  dodaje je w QGIS sam; allow_internal_network dotyczy już tylko adresów w sieci wewnętrznej. EN: MCP server: the
+  load_layer tool no longer loads files or databases from disk – the user adds them in QGIS;
+  allow_internal_network now covers internal-network addresses only.
+  1.0.1 – PL: serwer MCP: algorytmy Processing uruchamiane przez Claude zapisują wyniki tylko do warstw
   tymczasowych i czytają tylko warstwy projektu (bez plików z dysku). EN: MCP server: Processing algorithms run by
   Claude write results only to temporary layers and read only project layers (no files from disk).
   1.0 – PL: pierwsze publiczne wydanie. Panel z linią poleceń: wskazanie narzędzia albo plan działań
