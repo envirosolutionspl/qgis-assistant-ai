@@ -9,6 +9,7 @@ odpowiedzi, katalog narzędzi (nazwa + schemat JSON + mapowanie na krok planu)
 i dyspozytor JSON-RPC, któremu wykonanie narzędzia dostarcza się z zewnątrz
 (wywołanie zwrotne, bo kroki w QGIS są asynchroniczne).
 """
+import hashlib
 import hmac
 import json
 from urllib.parse import urlsplit
@@ -548,23 +549,28 @@ def origin_allowed(headers):
     return parts.scheme in ("http", "https") and host in LOCAL_HOSTS
 
 
-def authorized(headers, token):
+def token_digest(token):
+    """Skrót SHA-256 tokenu (szesnastkowo) – tylko on trafia do ustawień."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def authorized(headers, digest):
     """Czy żądanie ma token serwera.
 
-    Nagłówek Authorization: Bearer <token> (albo X-Token) musi zgadzać się
-    z tokenem serwera.
+    Skrót tokenu z nagłówka Authorization: Bearer <token> (albo X-Token)
+    musi zgadzać się ze skrótem zapisanym przez serwer (``token_digest``).
     """
-    if not token:
+    if not digest:
         return False
     auth = headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
-        return _same(auth[7:].strip(), token)
-    return _same(headers.get("x-token", ""), token)
-
-
-def _same(a, b):
+        sent = auth[7:].strip()
+    else:
+        sent = headers.get("x-token", "")
+    if not sent:
+        return False
     # porównanie w stałym czasie
-    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    return hmac.compare_digest(token_digest(sent), digest)
 
 
 # ------------------------------------------------------------------- JSON-RPC

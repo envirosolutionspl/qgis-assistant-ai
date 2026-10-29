@@ -225,8 +225,10 @@ class McpServer(QObject):
         self._server = None
         self._buffers = {}
         self._active = None
-        # token w pamięci (odczyt z ustawień przy każdym żądaniu jest zbędny)
+        # Token jawnym tekstem jest tylko w pamięci sesji, w której powstał
+        # (do skopiowania konfiguracji); w ustawieniach jest jego skrót.
         self._token = None
+        self._digest = None
         self._dispatcher = proto.Dispatcher(self._call_tool, plugin_version(),
                                             instructions(), qgis_language())
 
@@ -241,17 +243,42 @@ class McpServer(QObject):
         """Port, na którym serwer nasłuchuje (None, gdy nie działa)."""
         return self._server.serverPort() if self.running else None
 
+    def token_digest(self):
+        """Skrót SHA-256 tokenu z ustawień (tworzy token, gdy go nie ma).
+
+        Sam token nie jest zapisywany w profilu QGIS – zna go tylko
+        konfiguracja Claude Desktop. Token jawnym tekstem z wcześniejszych
+        wersji (``mcp/token``) jest zamieniany na skrót i usuwany.
+        """
+        if not self._digest:
+            old = self.settings.value("mcp/token", "", str)
+            if old:
+                self._token = old
+                self.settings.set_value("mcp/token_sha256",
+                                        proto.token_digest(old))
+                self.settings.remove("mcp/token")
+            self._digest = self.settings.value("mcp/token_sha256", "", str)
+            if not self._digest:
+                self.renew_token()
+        return self._digest
+
     def token(self):
-        """Token dostępu (tworzony przy pierwszym użyciu)."""
-        if not self._token:
-            self._token = (self.settings.value("mcp/token", "", str)
-                           or self.renew_token())
+        """Token do konfiguracji Claude Desktop.
+
+        Znany jest tylko w sesji QGIS, w której powstał; w innej sesji
+        tworzony jest nowy (poprzednia konfiguracja Claude Desktop przestaje
+        wtedy działać).
+        """
+        digest = self.token_digest()
+        if not self._token or proto.token_digest(self._token) != digest:
+            self.renew_token()
         return self._token
 
     def renew_token(self):
-        """Wygeneruj i zapisz nowy token; zwraca go."""
+        """Wygeneruj nowy token i zapisz jego skrót; zwraca token."""
         tok = secrets.token_urlsafe(24)
-        self.settings.set_value("mcp/token", tok)
+        self._digest = proto.token_digest(tok)
+        self.settings.set_value("mcp/token_sha256", self._digest)
         self._token = tok
         return tok
 
@@ -271,8 +298,9 @@ class McpServer(QObject):
 
         Ustawienia: mcp/enabled, mcp/port.
         """
-        # token mógł zostać zmieniony w ustawieniach – odczytamy go ponownie
-        self._token = None
+        # skrót tokenu mógł zostać zmieniony w ustawieniach – odczytamy go
+        # ponownie (token z pamięci zostaje, jeśli nadal pasuje)
+        self._digest = None
         enabled = self.settings.value("mcp/enabled", False, bool)
         port = self.settings.value("mcp/port", MCP_DEFAULT_PORT, int)
         if not enabled:
@@ -297,7 +325,7 @@ class McpServer(QObject):
             self._server = None
             self.stateChanged.emit(False, msg)
             return False
-        self.token()
+        self.token_digest()
         msg = tr("Serwer MCP nasłuchuje na %s") % self.url()
         _log("info", msg)
         self.stateChanged.emit(True, msg)
@@ -355,7 +383,7 @@ class McpServer(QObject):
                 200, {"ok": True, "name": proto.SERVER_NAME,
                       "qgis": Qgis.version(), "plugin": plugin_version()}))
             return
-        if not proto.authorized(headers, self.token()):
+        if not proto.authorized(headers, self.token_digest()):
             self._send(sock, proto.http_response(
                 401, {"error": "unauthorized"}))
             return

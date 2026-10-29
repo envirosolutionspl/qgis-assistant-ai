@@ -145,8 +145,12 @@ Claude Desktop ──stdio──▶ mcp_bridge.py (proces startowany przez Claud
 
 Włączenie: Ustawienia wtyczki › „Serwer MCP (Claude Desktop)” › zaznacz, zapisz, „Skopiuj konfigurację Claude Desktop”
 → wklej do `claude_desktop_config.json` (Claude Desktop: Settings › Developer › Edit Config) → uruchom Claude Desktop
-ponownie. Token przechowywany jest w ustawieniach QGIS (`mcp/token`) i w konfiguracji Claude Desktop; przycisk
-„Nowy token” unieważnia stary. Zasady bezpieczeństwa executora obowiązują: kroki `user_action`, `python`,
+ponownie. Token jest zapisany wyłącznie w konfiguracji Claude Desktop; w ustawieniach QGIS leży tylko jego skrót
+SHA-256 (`mcp/token_sha256`), który wystarcza do sprawdzania żądań i nie pozwala odtworzyć tokenu. Dlatego
+konfigurację z tym samym tokenem można skopiować tylko w sesji QGIS, w której token powstał – w kolejnej sesji
+kopiowanie tworzy nowy token (poprzednią konfigurację trzeba wtedy podmienić). Token jawnym tekstem z wersji
+sprzed 1.0 (`mcp/token`) jest przy pierwszym uruchomieniu zamieniany na skrót i usuwany. Przycisk „Nowy token”
+unieważnia stary. Zasady bezpieczeństwa executora obowiązują: kroki `user_action`, `python`,
 `processing_dialog` nie są dostępne; adresy w sieci wewnętrznej wymagają `allow_internal_network=true` w wywołaniu.
 Każde wywołanie jest logowane w dzienniku QGIS (zakładka GIS Assistant AI).
 Opisy narzędzi, instrukcje serwera i komunikaty mostu są po polsku, gdy język interfejsu QGIS to polski, w każdym innym

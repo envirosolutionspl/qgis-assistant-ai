@@ -49,13 +49,17 @@ class TestHttp:
         assert (head.startswith(b"HTTP/1.1 200 OK")
                 and b"Content-Length: %d" % len(body) in head)
         assert json.loads(body.decode("utf-8")) == {"a": "ą"}
-        assert proto.authorized({"authorization": "Bearer abc"}, "abc")
-        assert proto.authorized({"x-token": "abc"}, "abc")
-        assert not proto.authorized({"authorization": "Bearer abd"}, "abc")
-        assert (not proto.authorized({}, "abc")
+        digest = proto.token_digest("abc")
+        assert digest != "abc" and len(digest) == 64
+        assert proto.authorized({"authorization": "Bearer abc"}, digest)
+        assert proto.authorized({"x-token": "abc"}, digest)
+        assert not proto.authorized({"authorization": "Bearer abd"}, digest)
+        assert (not proto.authorized({}, digest)
                 and not proto.authorized({"authorization": "Bearer "}, ""))
-        assert not proto.authorized({"authorization": "Bearer abcd"}, "abc")
-        assert not proto.authorized({"authorization": "Bearer ąbc"}, "abc")
+        assert not proto.authorized({"authorization": "Bearer abcd"}, digest)
+        assert not proto.authorized({"authorization": "Bearer ąbc"}, digest)
+        # sam skrót podany jako token nie wystarcza
+        assert not proto.authorized({"x-token": digest}, digest)
 
     def test_forbidden_status(self):
         assert proto.http_response(403, {"error": "x"}).startswith(

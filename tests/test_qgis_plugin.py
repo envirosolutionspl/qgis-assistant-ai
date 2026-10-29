@@ -11,6 +11,7 @@ from qgis.core import (  # noqa: E402
     QgsFeature, QgsGeometry, QgsPointXY, QgsProject, QgsVectorLayer)
 from qgis.gui import QgsMapCanvas, QgsMessageBar  # noqa: E402
 from qgis.PyQt.QtCore import QEventLoop, QTimer  # noqa: E402
+from qgis.PyQt import sip  # noqa: E402
 from qgis.PyQt.QtWidgets import QMainWindow, QToolBar  # noqa: E402
 
 import gis_assistant_ai  # noqa: E402
@@ -66,8 +67,11 @@ class FakeIface:
 
 @pytest.fixture
 def iface(qgis_app):
-    yield FakeIface()
+    fake = FakeIface()
+    yield fake
     QgsProject.instance().clear()
+    # okno z kanwą usuwamy od razu, a nie przy wyjściu z Pythona (po QGIS)
+    sip.delete(fake.window)
 
 
 def _points_layer(name="szkoly", n=3):
@@ -158,6 +162,45 @@ def test_executor_stops_on_empty_result(iface):
     idx, message = _wait(ex.stepWarning)
     assert idx == 0 and message
     ex.abort()
+
+
+class FakeSettings:
+    """Ustawienia w słowniku – zamiast profilu QGIS."""
+
+    def __init__(self, data=None):
+        self.data = dict(data or {})
+
+    def value(self, key, default=None, type_=None):
+        return self.data.get(key, default)
+
+    def set_value(self, key, value):
+        self.data[key] = value
+
+    def remove(self, key):
+        self.data.pop(key, None)
+
+
+def test_mcp_token_kept_only_as_digest(iface):
+    from gis_assistant_ai import mcp_protocol as proto
+    from gis_assistant_ai.mcp_server import McpServer
+    # token jawnym tekstem z wersji 0.8 – zamieniany na skrót
+    settings = FakeSettings({"mcp/token": "stary-token"})
+    server = McpServer(iface, settings)
+    assert server.token_digest() == proto.token_digest("stary-token")
+    assert "mcp/token" not in settings.data
+    assert "stary-token" not in settings.data.values()
+    # w tej sesji konfiguracja nadal używa tego samego tokenu
+    assert server.token() == "stary-token"
+    assert proto.authorized({"authorization": "Bearer stary-token"},
+                            server.token_digest())
+    # nowa sesja QGIS: skrót wystarcza do sprawdzania żądań, a konfiguracja
+    # wymaga nowego tokenu
+    later = McpServer(iface, settings)
+    assert proto.authorized({"x-token": "stary-token"}, later.token_digest())
+    fresh = later.token()
+    assert fresh != "stary-token"
+    assert settings.data["mcp/token_sha256"] == proto.token_digest(fresh)
+    assert fresh not in settings.data.values()
 
 
 def test_dock_builds_and_cleans_up(iface):

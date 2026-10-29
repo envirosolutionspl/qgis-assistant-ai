@@ -59,6 +59,10 @@ class Settings:
         """Zapisz wartość ustawienia."""
         self._s.setValue(SETTINGS_PREFIX + key, value)
 
+    def remove(self, key):
+        """Usuń ustawienie z profilu QGIS."""
+        self._s.remove(SETTINGS_PREFIX + key)
+
     # -- dostawca / model
     @property
     def provider(self):
