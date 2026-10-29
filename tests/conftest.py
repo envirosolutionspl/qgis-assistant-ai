@@ -18,23 +18,26 @@ _APP = None
 
 @pytest.fixture(scope="session")
 def qgis_app():
-    """Aplikacja QGIS bez okna, z Processing i osobnym plikiem ustawień."""
+    """Aplikacja QGIS bez okna, z Processing i osobnym plikiem ustawień.
+
+    ``qgis.testing.start_app`` zamyka QGIS (``exitQgis``) przy wyjściu
+    z Pythona – bez tego proces potrafi się wysypać już po testach.
+    """
     global _APP
     pytest.importorskip("qgis.core")
-    from qgis.core import QgsApplication
     from qgis.PyQt.QtCore import QCoreApplication, QSettings
+    from qgis.testing import start_app
 
     if _APP is None:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        # profil QGIS testów w katalogu tymczasowym, nie w profilu użytkownika
-        os.environ["QGIS_CUSTOM_CONFIG_PATH"] = tempfile.mkdtemp()
+        # ustawienia testów w katalogu tymczasowym, nie w profilu
+        # użytkownika (profil QGIS – QGIS_CUSTOM_CONFIG_PATH w start_app)
         QCoreApplication.setOrganizationName("EnviroSolutionsTests")
         QCoreApplication.setApplicationName("gis_assistant_ai_tests")
         QSettings.setDefaultFormat(QSettings.Format.IniFormat)
         QSettings.setPath(QSettings.Format.IniFormat,
                           QSettings.Scope.UserScope, tempfile.mkdtemp())
-        _APP = QgsApplication([], True)
-        _APP.initQgis()
+        _APP = start_app()
         _init_processing()
     return _APP
 
