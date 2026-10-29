@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Instrukcje dla modelu AI oraz budowanie wiadomości.
 
-Sekcje 7–8 (wybór źródła danych, samodzielność, usługi sieciowe, dane spod adresu, kontrola wyniku)
-przeniesione z Asystenta AI geoportalu MAIP i dostosowane do QGIS Desktop.
+Sekcje 7–8 (wybór źródła danych, samodzielność, usługi sieciowe, dane spod
+adresu, kontrola wyniku) przeniesione z Asystenta AI geoportalu MAIP
+i dostosowane do QGIS Desktop.
 """
 import json
 
@@ -281,31 +282,42 @@ Polecenie: „Stwórz bufor 100 m od szkół w powiecie piaseczyńskim” (brak 
 
 
 def user_message(query, ctx_json, language="polski (pl)"):
+    """Wiadomość z kontekstem projektu, językiem odpowiedzi i poleceniem."""
     return (
         "KONTEKST PROJEKTU QGIS (JSON, bez danych poufnych):\n%s\n\n"
         "JĘZYK ODPOWIEDZI (interfejs QGIS): %s\n\n"
         "POLECENIE UŻYTKOWNIKA:\n%s\n\n"
-        "Odpowiedz jednym obiektem JSON zgodnym ze specyfikacją." % (ctx_json, language, query.strip())
+        "Odpowiedz jednym obiektem JSON zgodnym ze specyfikacją."
+        % (ctx_json, language, query.strip())
     )
 
 
-def revision_message(reason, plan, from_index, done_summary, ctx_json, extra="", language="polski (pl)"):
+def revision_message(reason, plan, from_index, done_summary, ctx_json,
+                     extra="", language="polski (pl)"):
+    """Prośba o korektę planu w trakcie wykonywania (od kroku from_index)."""
     remaining = plan.get("steps", [])[from_index:]
     return (
         "PLAN JEST W TRAKCIE WYKONYWANIA – potrzebna korekta.\n"
         "Powód: %s\n%s\n"
-        "Wykonane kroki i ich wyniki (identyfikatory warstw możesz używać przez {{id}}):\n%s\n\n"
+        "Wykonane kroki i ich wyniki (identyfikatory warstw możesz używać "
+        "przez {{id}}):\n%s\n\n"
         "Kroki pozostałe do wykonania (do poprawienia/zastąpienia):\n%s\n\n"
         "AKTUALNY KONTEKST PROJEKTU (JSON):\n%s\n\n"
         "JĘZYK ODPOWIEDZI (interfejs QGIS): %s\n\n"
-        "Zwróć JSON: {\"type\":\"plan_revision\",\"note\":\"krótko co zmieniasz\",\"steps\":[…]} zawierający "
-        "WYŁĄCZNIE nowe kroki od bieżącego miejsca do końca planu. Nadaj im NOWE identyfikatory w postaci "
-        "\"r%d_1\", \"r%d_2\"…, a do wyników wykonanych kroków odwołuj się ich dotychczasowymi identyfikatorami."
-        % (reason, extra, json.dumps(done_summary, ensure_ascii=False, indent=1),
-           json.dumps([public_fields(s) for s in remaining], ensure_ascii=False, indent=1), ctx_json, language,
-           from_index + 1, from_index + 1)
+        "Zwróć JSON: {\"type\":\"plan_revision\",\"note\":\"krótko co "
+        "zmieniasz\",\"steps\":[…]} zawierający "
+        "WYŁĄCZNIE nowe kroki od bieżącego miejsca do końca planu. Nadaj im "
+        "NOWE identyfikatory w postaci "
+        "\"r%d_1\", \"r%d_2\"…, a do wyników wykonanych kroków odwołuj się "
+        "ich dotychczasowymi identyfikatorami."
+        % (reason, extra,
+           json.dumps(done_summary, ensure_ascii=False, indent=1),
+           json.dumps([public_fields(s) for s in remaining],
+                      ensure_ascii=False, indent=1),
+           ctx_json, language, from_index + 1, from_index + 1)
     )
 
 
 TEST_SYSTEM = 'Odpowiadasz wyłącznie JSON-em.'
-TEST_USER = 'Zwróć dokładnie: {"type":"answer","title":"Test","text":"Połączenie działa."}'
+TEST_USER = ('Zwróć dokładnie: '
+             '{"type":"answer","title":"Test","text":"Połączenie działa."}')

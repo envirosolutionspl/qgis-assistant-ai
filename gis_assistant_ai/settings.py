@@ -1,31 +1,43 @@
 # -*- coding: utf-8 -*-
 """Ustawienia wtyczki oraz bezpieczne przechowywanie klucza API.
 
-Klucz API NIGDY nie jest zapisywany jawnym tekstem w QgsSettings (profilu QGIS).
-Trafia do zaszyfrowanej bazy menedżera uwierzytelniania QGIS (qgis-auth.db,
-chronionej hasłem głównym) albo – na życzenie – tylko do pamięci na czas sesji.
+Klucz API NIGDY nie jest zapisywany jawnym tekstem w QgsSettings (profilu
+QGIS). Trafia do zaszyfrowanej bazy menedżera uwierzytelniania QGIS
+(qgis-auth.db, chronionej hasłem głównym) albo – na życzenie – tylko do
+pamięci na czas sesji.
 """
 from qgis.core import QgsApplication, QgsMessageLog, QgsSettings, Qgis
 
-from .constants import (DEFAULT_PROVIDER, LLM_MAX_TOKENS, LLM_TIMEOUT_S, LOG_TAG,
-                        OLLAMA_TEMPERATURE, PROVIDERS, SETTINGS_PREFIX, WEB_SEARCH_MAX_USES)
+from .constants import (DEFAULT_PROVIDER, LLM_MAX_TOKENS, LLM_TIMEOUT_S,
+                        LOG_TAG, OLLAMA_TEMPERATURE, PROVIDERS,
+                        SETTINGS_PREFIX, WEB_SEARCH_MAX_USES)
 from .i18n import tr
 
 
 class Settings:
+    """Ustawienia wtyczki w profilu QGIS (prefiks SETTINGS_PREFIX)."""
+
     DEFAULTS = {
         "provider": DEFAULT_PROVIDER,
         "send_samples": False,
-        "allow_python": False,  # kod od modelu tylko po świadomym włączeniu (audyt B1)
+        # kod od modelu tylko po świadomym włączeniu (audyt B1)
+        "allow_python": False,
         "show_details": False,
-        "web_search": True,     # tylko Anthropic Claude – jak w Asystencie AI geoportalu
+        # tylko Anthropic Claude – jak w Asystencie AI geoportalu
+        "web_search": True,
     }
 
     def __init__(self):
+        """Utwórz obiekt ustawień oparty na QgsSettings."""
         self._s = QgsSettings()
 
     # -- podstawowe
     def value(self, key, default=None, type_=None):
+        """Wartość ustawienia przekształcona na typ type_.
+
+        Bez default używana jest wartość z DEFAULTS; typ wynika z default,
+        gdy nie podano go jawnie.
+        """
         full = SETTINGS_PREFIX + key
         if default is None:
             default = self.DEFAULTS.get(key)
@@ -44,21 +56,27 @@ class Settings:
         return self._s.value(full, default)
 
     def set_value(self, key, value):
+        """Zapisz wartość ustawienia."""
         self._s.setValue(SETTINGS_PREFIX + key, value)
 
     # -- dostawca / model
     @property
     def provider(self):
+        """Wybrany dostawca modeli (domyślny, gdy zapisany jest nieznany)."""
         p = self.value("provider", DEFAULT_PROVIDER, str)
         return p if p in PROVIDERS else DEFAULT_PROVIDER
 
     def model(self, provider=None):
+        """Model wybrany dla dostawcy."""
         provider = provider or self.provider
-        return self.value("model/" + provider, PROVIDERS[provider]["models"][0], str)
+        return self.value("model/" + provider,
+                          PROVIDERS[provider]["models"][0], str)
 
     def endpoint(self, provider=None):
+        """Adres API dostawcy."""
         provider = provider or self.provider
-        return self.value("endpoint/" + provider, PROVIDERS[provider]["url"], str)
+        return self.value("endpoint/" + provider, PROVIDERS[provider]["url"],
+                          str)
 
     def workspace(self, provider=None):
         """ID workspace Anthropic (wrkspc_…) – identyfikator, nie sekret."""
@@ -66,19 +84,25 @@ class Settings:
         return self.value("workspace/" + provider, "", str).strip()
 
     def web_search(self, provider=None):
-        """Czy model może wyszukiwać w internecie (narzędzie web_search jest dostępne tylko w API Anthropic)."""
+        """Czy model może wyszukiwać w internecie.
+
+        Narzędzie web_search jest dostępne tylko w API Anthropic.
+        """
         provider = provider or self.provider
         return provider == "anthropic" and self.value("web_search", True, bool)
 
     def llm_config(self):
+        """Konfiguracja zapytania dla LLMClient (z kluczem API)."""
         p = self.provider
         return {
             "workspace_id": self.workspace(p) if p == "anthropic" else "",
             "provider": p,
             "model": self.model(p),
             "endpoint": self.endpoint(p),
-            "api_key": SecretStore.get(p) if PROVIDERS[p]["needs_key"] else "",
-            # temperatury nie wysyłamy do modeli w chmurze – nowsze modele ją odrzucają
+            "api_key": (SecretStore.get(p) if PROVIDERS[p]["needs_key"]
+                        else ""),
+            # temperatury nie wysyłamy do modeli w chmurze – nowsze modele ją
+            # odrzucają
             "temperature": OLLAMA_TEMPERATURE if p == "ollama" else None,
             "max_tokens": LLM_MAX_TOKENS,
             "timeout_s": LLM_TIMEOUT_S.get(p, 180),
@@ -95,7 +119,7 @@ class SecretStore:
 
     @classmethod
     def clear_session(cls):
-        """Usuwa klucze trzymane w pamięci (wywoływane przy wyłączaniu wtyczki)."""
+        """Usuń klucze trzymane w pamięci (przy wyłączaniu wtyczki)."""
         cls._session.clear()
 
     @classmethod
@@ -110,6 +134,7 @@ class SecretStore:
 
     @classmethod
     def has(cls, provider):
+        """Czy dla dostawcy jest zapisany klucz (w pamięci lub magazynie)."""
         if cls._session.get(provider):
             return True
         am = cls._am()
@@ -122,6 +147,7 @@ class SecretStore:
 
     @classmethod
     def get(cls, provider):
+        """Klucz API dostawcy albo pusty tekst."""
         if cls._session.get(provider):
             return cls._session[provider]
         am = cls._am()
@@ -131,20 +157,23 @@ class SecretStore:
         try:
             if not am.existsAuthSetting(key):
                 return ""
-            # decrypt=True – QGIS poprosi o hasło główne, jeśli nie zostało jeszcze podane
+            # decrypt=True – QGIS poprosi o hasło główne, jeśli nie zostało
+            # jeszcze podane
             val = am.authSetting(key, "", True)
             val = str(val or "")
             if val:
-                cls._session[provider] = val  # bez ponownego pytania w tej sesji
+                # bez ponownego pytania w tej sesji
+                cls._session[provider] = val
             return val
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(tr("Nie udało się odczytać klucza API: %s") % e, LOG_TAG,
-                                     Qgis.MessageLevel.Warning)
+            QgsMessageLog.logMessage(
+                tr("Nie udało się odczytać klucza API: %s") % e, LOG_TAG,
+                Qgis.MessageLevel.Warning)
             return ""
 
     @classmethod
     def set(cls, provider, secret, persist=True):
-        """Zwraca (ok, opis_miejsca)."""
+        """Zapisz klucz API; zwraca (ok, opis_miejsca)."""
         secret = (secret or "").strip()
         cls._session[provider] = secret
         if not persist:
@@ -152,21 +181,29 @@ class SecretStore:
             return True, tr("tylko w pamięci (do zamknięcia QGIS)")
         am = cls._am()
         if am is None:
-            return True, tr("tylko w pamięci – menedżer uwierzytelniania QGIS jest niedostępny")
-        # Gdy zapis się nie uda, usuwamy poprzednio zapisany klucz – inaczej po restarcie QGIS wróciłby stary.
+            return True, tr("tylko w pamięci – menedżer uwierzytelniania "
+                            "QGIS jest niedostępny")
+        # Gdy zapis się nie uda, usuwamy poprzednio zapisany klucz – inaczej
+        # po restarcie QGIS wróciłby stary.
         try:
             if not am.setMasterPassword(True):
                 cls._remove_persistent(provider)
-                return True, tr("tylko w pamięci – nie podano hasła głównego QGIS")
+                return True, tr("tylko w pamięci – nie podano hasła głównego "
+                                "QGIS")
             if am.storeAuthSetting(cls._KEY % provider, secret, True):
-                return True, tr("zaszyfrowany w menedżerze uwierzytelniania QGIS")
+                return True, tr("zaszyfrowany w menedżerze uwierzytelniania "
+                                "QGIS")
         except Exception as e:  # noqa: BLE001
-            QgsMessageLog.logMessage(tr("Nie udało się zapisać klucza API: %s") % e, LOG_TAG, Qgis.MessageLevel.Warning)
+            QgsMessageLog.logMessage(
+                tr("Nie udało się zapisać klucza API: %s") % e, LOG_TAG,
+                Qgis.MessageLevel.Warning)
         cls._remove_persistent(provider)
-        return True, tr("tylko w pamięci – zapis w menedżerze uwierzytelniania nie powiódł się")
+        return True, tr("tylko w pamięci – zapis w menedżerze "
+                        "uwierzytelniania nie powiódł się")
 
     @classmethod
     def delete(cls, provider):
+        """Usuń klucz dostawcy z pamięci i z magazynu."""
         cls._session.pop(provider, None)
         cls._remove_persistent(provider)
 

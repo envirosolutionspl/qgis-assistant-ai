@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Serwer MCP: warstwa protokołu (bez Qt) i most stdio (uruchamiany jako podproces)."""
+"""Serwer MCP: warstwa protokołu (bez Qt) i most stdio.
+
+Most jest uruchamiany jako podproces.
+"""
 import json
 import os
 import socket
@@ -12,82 +15,106 @@ import pytest
 
 from gis_assistant_ai import mcp_protocol as proto
 
-BRIDGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "gis_assistant_ai", "mcp_bridge.py")
+BRIDGE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "gis_assistant_ai", "mcp_bridge.py")
 
 
-# ------------------------------------------------------------------ HTTP
+# ----------------------------------------------------------------------- HTTP
 class TestHttp:
+    """Parser żądań, odpowiedzi HTTP, token i nagłówek Origin."""
+
     def test_incomplete_then_complete(self):
         body = b'{"jsonrpc":"2.0","id":1,"method":"ping"}'
-        head = b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\nAuthorization: Bearer t\r\n\r\n" % len(body)
+        head = (b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n"
+                b"Authorization: Bearer t\r\n\r\n" % len(body))
         assert proto.parse_http_request(head[:20]) is None
         assert proto.parse_http_request(head + body[:5]) is None
-        method, path, headers, got, used = proto.parse_http_request(head + body + b"garbage")
+        method, path, headers, got, used = proto.parse_http_request(
+            head + body + b"garbage")
         assert (method, path, got) == ("POST", "/mcp", body)
-        assert headers["authorization"] == "Bearer t" and used == len(head) + len(body)
+        assert (headers["authorization"] == "Bearer t"
+                and used == len(head) + len(body))
 
     def test_malformed(self):
         with pytest.raises(ValueError):
             proto.parse_http_request(b"nonsense\r\n\r\n")
         with pytest.raises(ValueError):
-            proto.parse_http_request(b"POST /mcp HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n")
+            proto.parse_http_request(b"POST /mcp HTTP/1.1\r\nContent-Length: "
+                                     b"99999999\r\n\r\n")
 
     def test_response_and_auth(self):
         raw = proto.http_response(200, {"a": "ą"})
         head, body = raw.split(b"\r\n\r\n", 1)
-        assert head.startswith(b"HTTP/1.1 200 OK") and b"Content-Length: %d" % len(body) in head
+        assert (head.startswith(b"HTTP/1.1 200 OK")
+                and b"Content-Length: %d" % len(body) in head)
         assert json.loads(body.decode("utf-8")) == {"a": "ą"}
         assert proto.authorized({"authorization": "Bearer abc"}, "abc")
         assert proto.authorized({"x-token": "abc"}, "abc")
         assert not proto.authorized({"authorization": "Bearer abd"}, "abc")
-        assert not proto.authorized({}, "abc") and not proto.authorized({"authorization": "Bearer "}, "")
+        assert (not proto.authorized({}, "abc")
+                and not proto.authorized({"authorization": "Bearer "}, ""))
         assert not proto.authorized({"authorization": "Bearer abcd"}, "abc")
         assert not proto.authorized({"authorization": "Bearer ąbc"}, "abc")
 
     def test_forbidden_status(self):
-        assert proto.http_response(403, {"error": "x"}).startswith(b"HTTP/1.1 403 Forbidden\r\n")
+        assert proto.http_response(403, {"error": "x"}).startswith(
+            b"HTTP/1.1 403 Forbidden\r\n")
 
     def test_origin(self):
         assert proto.origin_allowed({})
-        for ok in ("http://localhost", "http://127.0.0.1:8765", "https://localhost:3000", "http://[::1]:80"):
+        for ok in ("http://localhost", "http://127.0.0.1:8765",
+                   "https://localhost:3000", "http://[::1]:80"):
             assert proto.origin_allowed({"origin": ok}), ok
-        for bad in ("https://evil.example", "http://127.0.0.1.evil.example", "null", "", "http://localhost:99999",
-                    "file://localhost", "http://localhost.evil.example:8765"):
+        for bad in ("https://evil.example", "http://127.0.0.1.evil.example",
+                    "null", "", "http://localhost:99999", "file://localhost",
+                    "http://localhost.evil.example:8765"):
             assert not proto.origin_allowed({"origin": bad}), bad
 
 
-# ------------------------------------------------------------------ JSON-RPC
+# ------------------------------------------------------------------- JSON-RPC
 class TestDispatcher:
+    """Metody MCP obsługiwane przez Dispatcher."""
+
     def _dispatch(self, msg, call_tool=None):
         out = []
-        d = proto.Dispatcher(call_tool or (lambda n, a, r: r(proto.tool_text("ok"))), "9.9", "instr")
+        d = proto.Dispatcher(
+            call_tool or (lambda n, a, r: r(proto.tool_text("ok"))),
+            "9.9", "instr")
         d.handle(msg, out.append)
         return out[0]
 
     def test_initialize_and_list(self):
-        r = self._dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        r = self._dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {}})
         assert r["result"]["protocolVersion"] == proto.PROTOCOL_VERSION
-        assert r["result"]["serverInfo"] == {"name": proto.SERVER_NAME, "version": "9.9"}
+        assert r["result"]["serverInfo"] == {"name": proto.SERVER_NAME,
+                                             "version": "9.9"}
         r = self._dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in r["result"]["tools"]]
         assert "bdot10k_layer" in names and "run_plan" in names
         assert all("step" not in t for t in r["result"]["tools"])
-        assert all("inputSchema" in t and t["description"] for t in r["result"]["tools"])
+        assert all("inputSchema" in t and t["description"]
+                   for t in r["result"]["tools"])
 
     def test_notification_and_unknown(self):
-        assert self._dispatch({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
+        assert self._dispatch({"jsonrpc": "2.0",
+                               "method": "notifications/initialized"}) is None
         r = self._dispatch({"jsonrpc": "2.0", "id": 3, "method": "nope"})
         assert r["error"]["code"] == proto.METHOD_NOT_FOUND
-        r = self._dispatch({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "x"}})
+        r = self._dispatch({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                            "params": {"name": "x"}})
         assert r["error"]["code"] == proto.INVALID_PARAMS
-        assert self._dispatch("garbage")["error"]["code"] == proto.INVALID_REQUEST
+        assert (self._dispatch("garbage")["error"]["code"]
+                == proto.INVALID_REQUEST)
 
     def test_params_must_be_object(self):
         for params in ([1, 2], "x", 5):
-            r = self._dispatch({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": params})
+            r = self._dispatch({"jsonrpc": "2.0", "id": 5,
+                                "method": "tools/call", "params": params})
             assert r["error"]["code"] == proto.INVALID_PARAMS and r["id"] == 5
-        r = self._dispatch({"jsonrpc": "2.0", "id": 6, "method": "ping", "params": None})
+        r = self._dispatch({"jsonrpc": "2.0", "id": 6, "method": "ping",
+                            "params": None})
         assert r["result"] == {}
 
     def test_tool_call_async(self):
@@ -98,64 +125,87 @@ class TestDispatcher:
             pending["name"], pending["args"] = name, args
 
         out = []
-        proto.Dispatcher(call_tool).handle({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                                            "params": {"name": "zoom_to_layer", "arguments": {"layer": "L"}}},
-                                           out.append)
+        proto.Dispatcher(call_tool).handle(
+            {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+             "params": {"name": "zoom_to_layer",
+                        "arguments": {"layer": "L"}}},
+            out.append)
         assert out == [] and pending["name"] == "zoom_to_layer"
         pending["respond"](proto.tool_text("done", structured={"x": 1}))
-        assert out[0]["id"] == 7 and out[0]["result"]["content"][0]["text"] == "done"
+        assert (out[0]["id"] == 7
+                and out[0]["result"]["content"][0]["text"] == "done")
         assert out[0]["result"]["structuredContent"] == {"x": 1}
 
 
-# ------------------------------------------------------------------ mapowanie narzędzi
+# ---------------------------------------------------------- mapowanie narzędzi
 class TestToolMapping:
+    """Narzędzia MCP → kroki planu, języki opisów, konfiguracja Claude."""
+
     def test_processing(self):
-        step = proto.tool_to_step("run_processing", {"algorithm": "native:buffer",
-                                                     "params": {"INPUT": "abc", "DISTANCE": 100},
-                                                     "output_name": "Bufor", "selected_only": True})
-        assert step["action"] == "processing" and step["algorithm"] == "native:buffer"
-        assert step["params"]["INPUT"] == {"source": "abc", "selected_only": True}
+        step = proto.tool_to_step("run_processing", {
+            "algorithm": "native:buffer",
+            "params": {"INPUT": "abc", "DISTANCE": 100},
+            "output_name": "Bufor", "selected_only": True})
+        assert (step["action"] == "processing"
+                and step["algorithm"] == "native:buffer")
+        assert step["params"]["INPUT"] == {"source": "abc",
+                                           "selected_only": True}
         assert step["title"] == "Bufor" and step["output_name"] == "Bufor"
 
     def test_generic_strips_consent_flag(self):
-        step = proto.tool_to_step("load_layer", {"provider": "ogr", "uri": "https://x/y.geojson", "name": "Y",
-                                                 "allow_internal_network": True})
-        assert step == {"id": "s1", "action": "load_layer", "title": "Y", "provider": "ogr",
-                        "uri": "https://x/y.geojson", "name": "Y"}
-        assert proto.tool_to_step("bdot10k_layer", {"teryt": "1418", "class": "OT_SKDR_L"})["title"] == "OT_SKDR_L"
+        step = proto.tool_to_step("load_layer", {
+            "provider": "ogr", "uri": "https://x/y.geojson", "name": "Y",
+            "allow_internal_network": True})
+        assert step == {"id": "s1", "action": "load_layer", "title": "Y",
+                        "provider": "ogr", "uri": "https://x/y.geojson",
+                        "name": "Y"}
+        assert proto.tool_to_step(
+            "bdot10k_layer",
+            {"teryt": "1418", "class": "OT_SKDR_L"})["title"] == "OT_SKDR_L"
         assert proto.tool_to_step("qgis_context", {}) is None
 
     def test_plan_from_args(self):
-        plan = proto.plan_from_args({"steps": [{"action": "uldk_boundary", "level": "powiat", "teryt": "1418"},
-                                               {"id": "zz", "action": "zoom", "layer": "{{s1}}"}]})
+        plan = proto.plan_from_args({"steps": [
+            {"action": "uldk_boundary", "level": "powiat", "teryt": "1418"},
+            {"id": "zz", "action": "zoom", "layer": "{{s1}}"}]})
         assert [s["id"] for s in plan["steps"]] == ["s1", "zz"]
-        assert plan["steps"][0]["title"] == "uldk_boundary" and plan["type"] == "plan"
+        assert (plan["steps"][0]["title"] == "uldk_boundary"
+                and plan["type"] == "plan")
 
     def test_language(self):
         out = []
-        proto.Dispatcher(lambda n, a, r: None, lang="en_GB").handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                                                                    out.append)
+        proto.Dispatcher(lambda n, a, r: None, lang="en_GB").handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, out.append)
         descs = [t["description"] for t in out[0]["result"]["tools"]]
-        assert descs[0].startswith("Description") and not any("ż" in d or "ą" in d for d in descs)
-        assert proto.normalize_lang("pl_PL") == "pl" and proto.normalize_lang("de_DE") == "en"
+        assert (descs[0].startswith("Description")
+                and not any("ż" in d or "ą" in d for d in descs))
+        assert (proto.normalize_lang("pl_PL") == "pl"
+                and proto.normalize_lang("de_DE") == "en")
         assert proto.public_tools("pl")[0]["description"].startswith("Opis")
 
     def test_claude_config(self):
-        cfg = proto.claude_desktop_config("C:/py/pythonw.exe", "C:/p/mcp_bridge.py", "http://127.0.0.1:8765/mcp",
-                                          "tok")
+        cfg = proto.claude_desktop_config(
+            "C:/py/pythonw.exe", "C:/p/mcp_bridge.py",
+            "http://127.0.0.1:8765/mcp", "tok")
         srv = cfg["mcpServers"]["qgis-gis-assistant"]
-        assert srv["command"] == "C:/py/pythonw.exe" and srv["args"][1:] == ["--url", "http://127.0.0.1:8765/mcp",
-                                                                              "--lang", "pl"]
+        assert (srv["command"] == "C:/py/pythonw.exe"
+                and srv["args"][1:] == ["--url", "http://127.0.0.1:8765/mcp",
+                                        "--lang", "pl"])
         assert srv["env"]["GIS_ASSISTANT_MCP_TOKEN"] == "tok"
 
 
-# ------------------------------------------------------------------ most stdio ↔ HTTP
+# ----------------------------------------------------------- most stdio ↔ HTTP
 class _FakeQgis(BaseHTTPRequestHandler):
-    """Udaje serwer we wtyczce: wymaga tokenu, odpowiada JSON-RPC, powiadomienia kwituje 202."""
+    """Udaje serwer we wtyczce.
+
+    Wymaga tokenu, odpowiada JSON-RPC, powiadomienia kwituje 202.
+    """
+
     token = "secret"
 
     def do_POST(self):  # noqa: N802
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        body = json.loads(self.rfile.read(
+            int(self.headers.get("Content-Length", 0))))
         if self.path != "/mcp":
             self._send(404, {"error": "not found"})
             return
@@ -168,7 +218,8 @@ class _FakeQgis(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self._send(200, {"jsonrpc": "2.0", "id": body["id"],
-                         "result": {"echo": body["method"], "args": body.get("params")}})
+                         "result": {"echo": body["method"],
+                                    "args": body.get("params")}})
 
     def _send(self, status, obj):
         data = json.dumps(obj).encode("utf-8")
@@ -192,26 +243,33 @@ def fake_qgis():
 
 
 def _run_bridge(url, token, messages, lang="pl"):
-    proc = subprocess.run([sys.executable, BRIDGE, "--url", url, "--lang", lang],
-                          input="\n".join(json.dumps(m) for m in messages),
-                          capture_output=True, text=True, timeout=30, env={**os.environ,
-                                                                             "GIS_ASSISTANT_MCP_TOKEN": token})
-    return [json.loads(line) for line in proc.stdout.splitlines() if line.strip()], proc.stderr
+    proc = subprocess.run(
+        [sys.executable, BRIDGE, "--url", url, "--lang", lang],
+        input="\n".join(json.dumps(m) for m in messages),
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "GIS_ASSISTANT_MCP_TOKEN": token})
+    return ([json.loads(line) for line in proc.stdout.splitlines()
+             if line.strip()], proc.stderr)
 
 
 class TestBridge:
+    """Most stdio ↔ HTTP uruchamiany jako podproces."""
+
     def test_relays_requests_and_swallows_notifications(self, fake_qgis):
         out, err = _run_bridge(fake_qgis, "secret", [
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"x": 1}},
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"x": 1}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}])
         assert [o["id"] for o in out] == [1, 2]
-        assert out[0]["result"]["echo"] == "initialize" and out[1]["result"]["echo"] == "tools/list"
+        assert (out[0]["result"]["echo"] == "initialize"
+                and out[1]["result"]["echo"] == "tools/list")
         assert err == ""
 
     def test_wrong_token_is_reported_to_claude(self, fake_qgis):
         out, err = _run_bridge(fake_qgis, "wrong", [
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "qgis_context", "arguments": {}}}])
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "qgis_context", "arguments": {}}}])
         assert out[0]["result"]["isError"] is True and "401" in err
         assert "token" in out[0]["result"]["content"][0]["text"]
 
@@ -220,26 +278,34 @@ class TestBridge:
             {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "qgis_status"}}])
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "qgis_status"}}])
         assert out[0]["result"]["serverInfo"]["version"] == "offline"
         assert out[1]["result"]["tools"][0]["name"] == "qgis_status"
-        assert out[2]["result"]["isError"] and "Uruchom QGIS" in out[2]["result"]["content"][0]["text"]
+        assert (out[2]["result"]["isError"]
+                and "Uruchom QGIS" in out[2]["result"]["content"][0]["text"])
 
     def test_offline_qgis_english(self):
         out, _ = _run_bridge("http://127.0.0.1:9/mcp", "t", [
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "qgis_status"}}], lang="en")
-        assert out[0]["result"]["tools"][0]["description"].startswith("QGIS is not responding")
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "qgis_status"}}], lang="en")
+        assert out[0]["result"]["tools"][0]["description"].startswith(
+            "QGIS is not responding")
         assert "Start QGIS" in out[1]["result"]["content"][0]["text"]
 
     def test_http_error_is_not_offline(self, fake_qgis):
-        out, err = _run_bridge(fake_qgis.replace("/mcp", "/other"), "secret", [
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}])
-        assert out[0]["id"] == 1 and out[0]["error"]["data"]["httpStatus"] == 404
+        out, err = _run_bridge(fake_qgis.replace("/mcp", "/other"), "secret",
+                               [{"jsonrpc": "2.0", "id": 1,
+                                 "method": "tools/list"}])
+        assert (out[0]["id"] == 1
+                and out[0]["error"]["data"]["httpStatus"] == 404)
         assert "404" in out[0]["error"]["message"] and "404" in err
 
     def test_rejects_non_local_url(self):
-        out, err = _run_bridge("http://example.com/mcp", "t", [{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+        out, err = _run_bridge("http://example.com/mcp", "t",
+                               [{"jsonrpc": "2.0", "id": 1,
+                                 "method": "ping"}])
         assert out == [] and "--url" in err
 
     def test_constants_match_protocol(self):
@@ -247,7 +313,8 @@ class TestBridge:
         assert mcp_bridge.PROTOCOL_VERSION == proto.PROTOCOL_VERSION
         assert mcp_bridge.SERVER_NAME == proto.SERVER_NAME
         assert mcp_bridge.LOCAL_HOSTS == proto.LOCAL_HOSTS
-        assert mcp_bridge.local_url("http://127.0.0.1:8765/mcp") and mcp_bridge.local_url("http://localhost:1/mcp")
+        assert (mcp_bridge.local_url("http://127.0.0.1:8765/mcp")
+                and mcp_bridge.local_url("http://localhost:1/mcp"))
         assert not mcp_bridge.local_url("https://127.0.0.1:8765/mcp")
         assert not mcp_bridge.local_url("http://127.0.0.1.evil.example/mcp")
 
@@ -256,9 +323,12 @@ class TestBridge:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        proc = subprocess.Popen([sys.executable, BRIDGE, "--url", "http://127.0.0.1:%d/mcp" % port],
-                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                encoding="utf-8", env={**os.environ, "GIS_ASSISTANT_MCP_TOKEN": "secret"})
+        proc = subprocess.Popen(
+            [sys.executable, BRIDGE, "--url",
+             "http://127.0.0.1:%d/mcp" % port],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+            env={**os.environ, "GIS_ASSISTANT_MCP_TOKEN": "secret"})
         srv = None
         try:
             def ask(msg):
@@ -267,13 +337,18 @@ class TestBridge:
                 return json.loads(proc.stdout.readline())
 
             init = ask({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-            assert init["result"]["capabilities"]["tools"]["listChanged"] is True
+            assert (init["result"]["capabilities"]["tools"]["listChanged"]
+                    is True)
             srv = HTTPServer(("127.0.0.1", port), _FakeQgis)
             threading.Thread(target=srv.serve_forever, daemon=True).start()
-            assert ask({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["echo"] == "tools/list"
-            assert json.loads(proc.stdout.readline()) == {"jsonrpc": "2.0",
-                                                          "method": "notifications/tools/list_changed"}
-            assert ask({"jsonrpc": "2.0", "id": 3, "method": "ping"})["id"] == 3   # powiadomienie tylko raz
+            assert (ask({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+                    ["result"]["echo"] == "tools/list")
+            assert json.loads(proc.stdout.readline()) == {
+                "jsonrpc": "2.0",
+                "method": "notifications/tools/list_changed"}
+            # powiadomienie tylko raz
+            assert (ask({"jsonrpc": "2.0", "id": 3, "method": "ping"})["id"]
+                    == 3)
             proc.stdin.close()
             assert proc.stdout.read().strip() == ""
         finally:

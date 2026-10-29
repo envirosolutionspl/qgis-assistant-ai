@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
+"""Okno ustawień: model językowy, klucz API, prywatność, serwer MCP."""
 
 from qgis.PyQt.QtCore import QUrl
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QSpinBox, QVBoxLayout,
 )
 
 from ..constants import ICON_PATH, OLLAMA_TEMPERATURE, PLUGIN_NAME, PROVIDERS
@@ -17,7 +19,14 @@ from . import styles
 
 
 class SettingsDialog(QDialog):
+    """Ustawienia wtyczki; zapis dopiero przyciskiem „Zapisz”.
+
+    Po zapisaniu nowego klucza właściwość key_storage_info opisuje,
+    gdzie go przechowano.
+    """
+
     def __init__(self, settings, parent=None):
+        """Zbuduj okno i wczytaj bieżące ustawienia."""
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle(PLUGIN_NAME + tr(" – ustawienia"))
@@ -55,14 +64,17 @@ class SettingsDialog(QDialog):
         self.endpoint = QLineEdit()
         reset = QPushButton(tr("Domyślny"))
         reset.setObjectName("secondary")
-        reset.clicked.connect(lambda: self.endpoint.setText(PROVIDERS[self._prov()]["url"]))
+        reset.clicked.connect(
+            lambda: self.endpoint.setText(PROVIDERS[self._prov()]["url"]))
         ep_row.addWidget(self.endpoint, 1)
         ep_row.addWidget(reset)
         form.addRow(tr("Adres API:"), ep_row)
-        self.http_warn = QLabel("⚠ " + tr("Adres nie używa szyfrowania (http://) – klucz API zostałby wysłany "
-                                          "jawnym tekstem. Użyj https://."))
+        self.http_warn = QLabel("⚠ " + tr(
+            "Adres nie używa szyfrowania (http://) – klucz API zostałby "
+            "wysłany jawnym tekstem. Użyj https://."))
         self.http_warn.setWordWrap(True)
-        self.http_warn.setStyleSheet("color:%s;font-size:10px;font-weight:600;" % self.pal["error"])
+        self.http_warn.setStyleSheet(
+            "color:%s;font-size:10px;font-weight:600;" % self.pal["error"])
         self.http_warn.hide()
         form.addRow("", self.http_warn)
         self.endpoint.textChanged.connect(self._check_endpoint)
@@ -78,17 +90,21 @@ class SettingsDialog(QDialog):
         self.key_label = QLabel(tr("Klucz API:"))
         form.addRow(self.key_label, key_row)
         self.persist = QCheckBox(tr("Zapamiętaj klucz (zaszyfrowany w QGIS)"))
-        self.persist.setToolTip(tr("Klucz trafia do zaszyfrowanej bazy menedżera uwierzytelniania QGIS. "
-                                "Bez zaznaczenia jest pamiętany tylko do zamknięcia QGIS."))
+        self.persist.setToolTip(tr(
+            "Klucz trafia do zaszyfrowanej bazy menedżera uwierzytelniania "
+            "QGIS. Bez zaznaczenia jest pamiętany tylko do zamknięcia QGIS."))
         self.persist.setChecked(True)
         form.addRow("", self.persist)
         self.workspace = QLineEdit()
-        self.workspace.setPlaceholderText(tr("opcjonalnie, np. wrkspc_01AbCd… – wymagane dla kluczy bez workspace"))
+        self.workspace.setPlaceholderText(tr(
+            "opcjonalnie, np. wrkspc_01AbCd… – wymagane dla kluczy bez "
+            "workspace"))
         self.workspace_label = QLabel(tr("ID workspace:"))
         form.addRow(self.workspace_label, self.workspace)
-        self.key_info = QLabel(
-            tr("Klucz jest wysyłany wyłącznie w nagłówku zapytania do powyższego adresu API. "
-            "Nie jest zapisywany jawnym tekstem w profilu QGIS."))
+        self.key_info = QLabel(tr(
+            "Klucz jest wysyłany wyłącznie w nagłówku zapytania do "
+            "powyższego adresu API. Nie jest zapisywany jawnym tekstem "
+            "w profilu QGIS."))
         self.key_info.setObjectName("hint")
         self.key_info.setWordWrap(True)
         form.addRow("", self.key_info)
@@ -96,18 +112,27 @@ class SettingsDialog(QDialog):
 
         priv = QGroupBox(tr("Prywatność i bezpieczeństwo"))
         v = QVBoxLayout(priv)
-        self.send_samples = QCheckBox(tr("Wysyłaj przykładowe wartości atrybutów"))
-        self.send_samples.setToolTip(
-            tr("Maks. 5 wartości tekstowych na pole – model trafniej buduje wyrażenia filtrujące."))
-        self.allow_python = QCheckBox(tr("Pozwól AI proponować kod PyQGIS (zawsze po Twoim zatwierdzeniu)"))
-        self.web_search = QCheckBox(tr("Pozwól AI wyszukiwać w internecie (adresy usług WMS/WFS, kody TERYT)"))
-        self.web_search.setToolTip(
-            tr("Tylko Anthropic Claude. Wyszukiwanie wykonuje API Anthropic na podstawie Twojego polecenia – nie są "
-               "wysyłane żadne dodatkowe dane projektu. Administrator organizacji musi je włączyć w Claude Console "
-               "(Settings › Privacy); bez tego asystent działa bez wyszukiwania."))
-        info = QLabel(
-            tr("Do modelu wysyłane są: treść polecenia oraz opis projektu (nazwy i pola warstw, układy "
-            "współrzędnych, zasięg mapy). Hasła, loginy, tokeny i pełne ścieżki dysków są usuwane. "
+        self.send_samples = QCheckBox(
+            tr("Wysyłaj przykładowe wartości atrybutów"))
+        self.send_samples.setToolTip(tr(
+            "Maks. 5 wartości tekstowych na pole – model trafniej buduje "
+            "wyrażenia filtrujące."))
+        self.allow_python = QCheckBox(tr(
+            "Pozwól AI proponować kod PyQGIS (zawsze po Twoim "
+            "zatwierdzeniu)"))
+        self.web_search = QCheckBox(tr(
+            "Pozwól AI wyszukiwać w internecie (adresy usług WMS/WFS, kody "
+            "TERYT)"))
+        self.web_search.setToolTip(tr(
+            "Tylko Anthropic Claude. Wyszukiwanie wykonuje API Anthropic na "
+            "podstawie Twojego polecenia – nie są wysyłane żadne dodatkowe "
+            "dane projektu. Administrator organizacji musi je włączyć "
+            "w Claude Console (Settings › Privacy); bez tego asystent działa "
+            "bez wyszukiwania."))
+        info = QLabel(tr(
+            "Do modelu wysyłane są: treść polecenia oraz opis projektu "
+            "(nazwy i pola warstw, układy współrzędnych, zasięg mapy). "
+            "Hasła, loginy, tokeny i pełne ścieżki dysków są usuwane. "
             "Wybierając Ollama, wszystko pozostaje na Twoim komputerze."))
         info.setWordWrap(True)
         info.setObjectName("hint")
@@ -119,16 +144,21 @@ class SettingsDialog(QDialog):
 
         mcp = QGroupBox(tr("Serwer MCP (Claude Desktop)"))
         mv = QVBoxLayout(mcp)
-        self.mcp_enabled = QCheckBox(tr("Udostępnij QGIS aplikacji Claude Desktop (serwer MCP na tym komputerze)"))
-        self.mcp_enabled.setToolTip(
-            tr("Nasłuchuje wyłącznie na 127.0.0.1 i wymaga tokenu. Claude Desktop łączy się przez most "
-               "mcp_bridge.py z katalogu wtyczki. Kroki wymagające działania użytkownika ani kod PyQGIS nie są "
-               "dostępne przez MCP; adresy w sieci wewnętrznej wymagają jawnej zgody w wywołaniu."))
+        self.mcp_enabled = QCheckBox(tr(
+            "Udostępnij QGIS aplikacji Claude Desktop (serwer MCP na tym "
+            "komputerze)"))
+        self.mcp_enabled.setToolTip(tr(
+            "Nasłuchuje wyłącznie na 127.0.0.1 i wymaga tokenu. Claude "
+            "Desktop łączy się przez most mcp_bridge.py z katalogu wtyczki. "
+            "Kroki wymagające działania użytkownika ani kod PyQGIS nie są "
+            "dostępne przez MCP; adresy w sieci wewnętrznej wymagają jawnej "
+            "zgody w wywołaniu."))
         port_row = QHBoxLayout()
         self.mcp_port = QSpinBox()
         self.mcp_port.setRange(1024, 65535)
         self.mcp_port.setValue(mcp_server.MCP_DEFAULT_PORT)
-        self.mcp_copy = QPushButton(tr("Skopiuj konfigurację Claude Desktop"))
+        self.mcp_copy = QPushButton(
+            tr("Skopiuj konfigurację Claude Desktop"))
         self.mcp_copy.setObjectName("secondary")
         self.mcp_copy.clicked.connect(self._copy_mcp_config)
         self.mcp_renew = QPushButton(tr("Nowy token"))
@@ -157,11 +187,13 @@ class SettingsDialog(QDialog):
         test_row.addWidget(self.test_label, 1)
         lay.addLayout(test_row)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
+                                   | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         bottom = QHBoxLayout()
-        self.version_label = QLabel("%s %s" % (PLUGIN_NAME, mcp_server.plugin_version()))
+        self.version_label = QLabel(
+            "%s %s" % (PLUGIN_NAME, mcp_server.plugin_version()))
         self.version_label.setEnabled(False)  # wyszarzony, informacyjny
         bottom.addWidget(self.version_label)
         bottom.addStretch(1)
@@ -170,8 +202,11 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(styles.stylesheet(self.pal))
 
     def done(self, result):  # noqa: N802
-        """Zamknięcie okna w trakcie „Testuj połączenie” – przerywamy zapytanie, żeby odpowiedź nie trafiła
-        w usunięty już obiekt (LLMClient jest dzieckiem tego okna)."""
+        """Zamknij okno, przerywając trwający test połączenia.
+
+        Odpowiedź nie może trafić w usunięty już obiekt (LLMClient jest
+        dzieckiem tego okna).
+        """
         self._client.abort()
         super().done(result)
 
@@ -182,11 +217,16 @@ class SettingsDialog(QDialog):
         idx = self.provider.findData(self.settings.provider)
         self.provider.setCurrentIndex(max(idx, 0))
         self._provider_changed()
-        self.send_samples.setChecked(self.settings.value("send_samples", False, bool))
-        self.allow_python.setChecked(self.settings.value("allow_python", False, bool))
-        self.web_search.setChecked(self.settings.value("web_search", True, bool))
-        self.mcp_enabled.setChecked(self.settings.value("mcp/enabled", False, bool))
-        self.mcp_port.setValue(self.settings.value("mcp/port", mcp_server.MCP_DEFAULT_PORT, int))
+        self.send_samples.setChecked(
+            self.settings.value("send_samples", False, bool))
+        self.allow_python.setChecked(
+            self.settings.value("allow_python", False, bool))
+        self.web_search.setChecked(
+            self.settings.value("web_search", True, bool))
+        self.mcp_enabled.setChecked(
+            self.settings.value("mcp/enabled", False, bool))
+        self.mcp_port.setValue(self.settings.value(
+            "mcp/port", mcp_server.MCP_DEFAULT_PORT, int))
         self._mcp_refresh_status()
 
     def _provider_changed(self, *_):
@@ -200,25 +240,33 @@ class SettingsDialog(QDialog):
             meta["models_url"], self.pal["primary"], tr("Lista modeli")))
         self._check_endpoint()
         needs = meta["needs_key"]
-        for w in (self.api_key, self.del_key, self.persist, self.key_label, self.key_info):
+        for w in (self.api_key, self.del_key, self.persist, self.key_label,
+                  self.key_info):
             w.setVisible(needs)
         is_anthropic = p == "anthropic"
         self.web_search.setEnabled(is_anthropic)
         self.workspace.setVisible(is_anthropic)
         self.workspace_label.setVisible(is_anthropic)
-        self.workspace.setText(self.settings.workspace(p) if is_anthropic else "")
+        self.workspace.setText(
+            self.settings.workspace(p) if is_anthropic else "")
         self.api_key.clear()
         has = SecretStore.has(p)
         self.api_key.setPlaceholderText(
-            tr("•••••••• (klucz zapisany – wpisz nowy, aby zmienić)") if has else tr("wklej klucz API"))
+            tr("•••••••• (klucz zapisany – wpisz nowy, aby zmienić)") if has
+            else tr("wklej klucz API"))
         self.del_key.setEnabled(has)
 
     def _insecure_endpoint(self):
-        """Klucz API przez nieszyfrowane http:// do innego komputera (audyt B4)."""
+        """Klucz API przez nieszyfrowane http:// do innego komputera.
+
+        Audyt B4.
+        """
         if not PROVIDERS[self._prov()]["needs_key"]:
             return False
         url = QUrl(self.endpoint.text().strip())
-        return url.scheme().lower() == "http" and url.host().lower() not in ("localhost", "127.0.0.1", "::1")
+        return (url.scheme().lower() == "http"
+                and url.host().lower() not in ("localhost", "127.0.0.1",
+                                               "::1"))
 
     def _check_endpoint(self, *_):
         self.http_warn.setVisible(self._insecure_endpoint())
@@ -231,17 +279,23 @@ class SettingsDialog(QDialog):
 
     def _current_config(self):
         p = self._prov()
-        key = self.api_key.text().strip() or (SecretStore.get(p) if PROVIDERS[p]["needs_key"] else "")
-        return {"provider": p, "model": self.model.currentText().strip(), "endpoint": self.endpoint.text().strip(),
-                "workspace_id": self.workspace.text().strip() if p == "anthropic" else "",
-                "api_key": key, "temperature": OLLAMA_TEMPERATURE if p == "ollama" else None,
+        key = self.api_key.text().strip() or (
+            SecretStore.get(p) if PROVIDERS[p]["needs_key"] else "")
+        return {"provider": p, "model": self.model.currentText().strip(),
+                "endpoint": self.endpoint.text().strip(),
+                "workspace_id": (self.workspace.text().strip()
+                                 if p == "anthropic" else ""),
+                "api_key": key,
+                "temperature": OLLAMA_TEMPERATURE if p == "ollama" else None,
                 "max_tokens": 200, "timeout_s": 30}
 
     def _test(self):
         self.test_label.setStyleSheet("color:%s;" % self.pal["muted"])
         self.test_label.setText(tr("Łączę…"))
         self.test_btn.setEnabled(False)
-        self._client.request(TEST_SYSTEM, [{"role": "user", "content": TEST_USER}], self._current_config())
+        self._client.request(TEST_SYSTEM,
+                             [{"role": "user", "content": TEST_USER}],
+                             self._current_config())
 
     def _test_ok(self, text):
         self.test_btn.setEnabled(True)
@@ -252,31 +306,39 @@ class SettingsDialog(QDialog):
     def _mcp_refresh_status(self):
         server = mcp_server.instance()
         if server is None:
-            self.mcp_status.setText(tr("Serwer MCP jest dostępny po ponownym uruchomieniu wtyczki."))
+            self.mcp_status.setText(tr(
+                "Serwer MCP jest dostępny po ponownym uruchomieniu wtyczki."))
         elif server.running:
-            self.mcp_status.setText(tr("Działa: %s. Po zmianie portu lub tokenu skopiuj konfigurację ponownie "
-                                       "do claude_desktop_config.json i uruchom Claude Desktop od nowa.")
-                                    % server.url())
+            self.mcp_status.setText(tr(
+                "Działa: %s. Po zmianie portu lub tokenu skopiuj "
+                "konfigurację ponownie do claude_desktop_config.json "
+                "i uruchom Claude Desktop od nowa.") % server.url())
         else:
-            self.mcp_status.setText(tr("Zatrzymany. Po zapisaniu z zaznaczoną opcją serwer uruchomi się od razu; "
-                                       "następnie skopiuj konfigurację do Claude Desktop (Ustawienia › Developer › "
-                                       "Edit Config)."))
+            self.mcp_status.setText(tr(
+                "Zatrzymany. Po zapisaniu z zaznaczoną opcją serwer uruchomi "
+                "się od razu; następnie skopiuj konfigurację do Claude "
+                "Desktop (Ustawienia › Developer › Edit Config)."))
 
     def _copy_mcp_config(self):
         server = mcp_server.instance()
         if server is None:
             return
-        # port z pola (jeszcze niezapisany) – zapis dopiero przyciskiem „Zapisz”
-        QApplication.clipboard().setText(mcp_server.config_snippet(server, port=self.mcp_port.value()))
-        self.mcp_status.setText(tr("Skopiowano do schowka fragment claude_desktop_config.json (zawiera token – "
-                                   "nie udostępniaj go). Wklej go do pliku i uruchom Claude Desktop ponownie."))
+        # port z pola (jeszcze niezapisany) – zapis dopiero przyciskiem
+        # „Zapisz”
+        QApplication.clipboard().setText(mcp_server.config_snippet(
+            server, port=self.mcp_port.value()))
+        self.mcp_status.setText(tr(
+            "Skopiowano do schowka fragment claude_desktop_config.json "
+            "(zawiera token – nie udostępniaj go). Wklej go do pliku "
+            "i uruchom Claude Desktop ponownie."))
 
     def _renew_mcp_token(self):
         server = mcp_server.instance()
         if server is None:
             return
         server.renew_token()
-        self.mcp_status.setText(tr("Wygenerowano nowy token – skopiuj konfigurację ponownie."))
+        self.mcp_status.setText(tr(
+            "Wygenerowano nowy token – skopiuj konfigurację ponownie."))
 
     def _test_fail(self, msg):
         self.test_btn.setEnabled(True)
@@ -287,15 +349,20 @@ class SettingsDialog(QDialog):
         p = self._prov()
         if self._insecure_endpoint():
             ans = QMessageBox.warning(
-                self, PLUGIN_NAME, tr("Adres API używa nieszyfrowanego połączenia http://, więc klucz API "
-                                      "może zostać przechwycony. Zapisać mimo to?"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                self, PLUGIN_NAME, tr(
+                    "Adres API używa nieszyfrowanego połączenia http://, "
+                    "więc klucz API może zostać przechwycony. Zapisać mimo "
+                    "to?"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
             if ans != QMessageBox.StandardButton.Yes:
                 return
         s = self.settings
         s.set_value("provider", p)
-        s.set_value("model/" + p, self.model.currentText().strip() or PROVIDERS[p]["models"][0])
-        s.set_value("endpoint/" + p, self.endpoint.text().strip() or PROVIDERS[p]["url"])
+        s.set_value("model/" + p, self.model.currentText().strip()
+                    or PROVIDERS[p]["models"][0])
+        s.set_value("endpoint/" + p, self.endpoint.text().strip()
+                    or PROVIDERS[p]["url"])
         if p == "anthropic":
             s.set_value("workspace/" + p, self.workspace.text().strip())
         s.set_value("send_samples", self.send_samples.isChecked())
@@ -308,7 +375,8 @@ class SettingsDialog(QDialog):
             server.apply_settings()
         key = self.api_key.text().strip()
         if key and PROVIDERS[p]["needs_key"]:
-            _, where = SecretStore.set(p, key, persist=self.persist.isChecked())
+            _, where = SecretStore.set(p, key,
+                                       persist=self.persist.isChecked())
             self.api_key.clear()
             self.setProperty("key_storage_info", where)
         self.accept()

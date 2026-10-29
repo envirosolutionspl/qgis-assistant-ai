@@ -112,7 +112,8 @@ def test_context_describes_layers_without_paths(iface):
     iface.active = layer
     ctx = build_context(iface, Settings())
     assert ctx["active_layer"] == "szkoly"
-    assert list(ctx)[-1] == "layers"  # warstwy na końcu (ucinane jako pierwsze)
+    # warstwy na końcu (ucinane jako pierwsze)
+    assert list(ctx)[-1] == "layers"
     info = ctx["layers"][0]
     assert info["name"] == "szkoly"
     assert "native" in ctx["processing_providers"]

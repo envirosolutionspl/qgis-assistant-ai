@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+"""Klasa wtyczki: przycisk i menu, panel asystenta, serwer MCP."""
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QToolBar
@@ -16,14 +17,18 @@ from .i18n import tr
 
 
 def _debug_log():
-    """Błąd nieblokujący – zapisujemy ślad w dzienniku QGIS zamiast go ukrywać."""
+    """Zapisz ślad błędu nieblokującego w dzienniku QGIS zamiast go ukrywać."""
     import traceback
     from qgis.core import Qgis, QgsMessageLog
-    QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG, Qgis.MessageLevel.Info)
+    QgsMessageLog.logMessage(traceback.format_exc(), LOG_TAG,
+                             Qgis.MessageLevel.Info)
 
 
 class GISAssistantAIPlugin:
+    """Wtyczka GIS Assistant AI – punkt wejścia wywoływany przez QGIS."""
+
     def __init__(self, iface):
+        """Zapamiętaj interfejs QGIS i wczytaj tłumaczenia."""
         self.iface = iface
         self.action = None
         self.toolbar = None
@@ -34,32 +39,41 @@ class GISAssistantAIPlugin:
         i18n.install()
 
     def initGui(self):  # noqa: N802
+        """Dodaj przycisk, pozycję menu i skrót; uruchom serwer MCP."""
         # Wspólny pasek narzędzi wtyczek EnviroSolutions
-        self.toolbar = self.iface.mainWindow().findChild(QToolBar, ENV_MENU_NAME)
+        self.toolbar = self.iface.mainWindow().findChild(QToolBar,
+                                                         ENV_MENU_NAME)
         if not self.toolbar:
             self.toolbar = self.iface.addToolBar(ENV_MENU_NAME)
             self.toolbar.setObjectName(ENV_MENU_NAME)
 
-        self.action = QAction(QIcon(ICON_PATH), PLUGIN_NAME, self.iface.mainWindow())
+        self.action = QAction(QIcon(ICON_PATH), PLUGIN_NAME,
+                              self.iface.mainWindow())
         self.action.setObjectName("gisAssistantAIAction")
-        self.action.setToolTip(PLUGIN_NAME + tr(" – opisz, co chcesz zrobić w QGIS"))
+        self.action.setToolTip(
+            PLUGIN_NAME + tr(" – opisz, co chcesz zrobić w QGIS"))
         self.action.setCheckable(True)
         self.action.triggered.connect(self.toggle)
         self.toolbar.addAction(self.action)
         self.iface.addPluginToMenu(self.menu, self.action)
-        try:  # skrót klawiszowy konfigurowalny w Ustawienia > Skróty klawiszowe
+        # skrót klawiszowy konfigurowalny w Ustawienia > Skróty klawiszowe
+        try:
             self.iface.registerMainWindowAction(self.action, "Ctrl+Alt+A")
         except Exception:  # noqa: BLE001
             _debug_log()
-        # serwer MCP (Claude Desktop) – nasłuchuje tylko, gdy włączony w ustawieniach
+        # serwer MCP (Claude Desktop) – nasłuchuje tylko, gdy włączony
+        # w ustawieniach
         try:
-            self.mcp = mcp_server.McpServer(self.iface, Settings(), self.iface.mainWindow())
+            self.mcp = mcp_server.McpServer(self.iface, Settings(),
+                                            self.iface.mainWindow())
             mcp_server.set_instance(self.mcp)
             self.mcp.apply_settings()
-        except Exception:  # noqa: BLE001 – brak serwera MCP nie może blokować wtyczki
+        except Exception:  # noqa: BLE001
+            # brak serwera MCP nie może blokować wtyczki
             _debug_log()
 
     def unload(self):
+        """Usuń panel, przycisk, menu i serwer MCP; wyczyść klucze sesji."""
         if self.mcp is not None:
             self.mcp.stop()
             mcp_server.set_instance(None)
@@ -78,9 +92,11 @@ class GISAssistantAIPlugin:
             self.iface.removePluginMenu(self.menu, self.action)
             if self.toolbar is not None:
                 self.toolbar.removeAction(self.action)
-                if not self.toolbar.actions():  # pasek usuwamy tylko, gdy nie używa go inna wtyczka ES
+                # pasek usuwamy tylko, gdy nie używa go inna wtyczka ES
+                if not self.toolbar.actions():
                     self.toolbar.deleteLater()
-            # akcja jest dzieckiem okna głównego – bez usunięcia (i rozłączenia) trzyma starą instancję wtyczki
+            # akcja jest dzieckiem okna głównego – bez usunięcia
+            # (i rozłączenia) trzyma starą instancję wtyczki
             try:
                 self.action.triggered.disconnect(self.toggle)
             except (TypeError, RuntimeError):
@@ -92,15 +108,19 @@ class GISAssistantAIPlugin:
         i18n.uninstall()
 
     def toggle(self, checked=None):
+        """Pokaż lub ukryj panel (przy pierwszym użyciu – utwórz go)."""
         if self.dock is None:
             from .ui.dock import GISAssistantAIDock
-            self.dock = GISAssistantAIDock(self.iface, self.iface.mainWindow())
+            self.dock = GISAssistantAIDock(self.iface,
+                                           self.iface.mainWindow())
             self.dock.visibilityChanged.connect(self.action.setChecked)
-            self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
+            self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
+                                     self.dock)
             self.dock.show()
             self.dock.raise_()
             return
-        visible = not self.dock.isVisible() if checked is None else bool(checked)
+        visible = (not self.dock.isVisible() if checked is None
+                   else bool(checked))
         self.dock.setVisible(visible)
         if visible:
             self.dock.raise_()

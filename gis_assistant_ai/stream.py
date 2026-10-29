@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Parser odpowiedzi strumieniowych modeli językowych – bez Qt, więc testowalny poza QGIS.
+"""Parser odpowiedzi strumieniowych modeli językowych.
 
-Obsługuje SSE Anthropic (zdarzenia content_block_*, message_delta, w tym bloki server_tool_use dla web_search
-i wznawianie tury „pause_turn”), SSE OpenAI („data: {…}” z choices[].delta) i NDJSON Ollamy.
-Ten sam obiekt odczytuje też odpowiedź niestrumieniową (complete()).
+Moduł nie zależy od Qt, więc jest testowalny poza QGIS. Obsługuje SSE
+Anthropic (zdarzenia content_block_*, message_delta, w tym bloki
+server_tool_use dla web_search i wznawianie tury „pause_turn”), SSE OpenAI
+(„data: {…}” z choices[].delta) i NDJSON Ollamy. Ten sam obiekt odczytuje też
+odpowiedź niestrumieniową (complete()).
 """
 import json
 
@@ -11,22 +13,37 @@ from .i18n import tr
 
 
 class StreamParser:
+    """Składa odpowiedź modelu z kolejnych fragmentów strumienia."""
+
     def __init__(self, provider):
+        """Utwórz parser dla dostawcy: anthropic, openai albo ollama."""
         self.provider = provider
-        self.text = []            # fragmenty tekstu odpowiedzi w kolejności nadejścia
-        self.blocks = {}          # bloki odpowiedzi Anthropic (indeks → blok) – do wznowienia tury
+        # fragmenty tekstu odpowiedzi w kolejności nadejścia
+        self.text = []
+        # bloki odpowiedzi Anthropic (indeks → blok) – do wznowienia tury
+        self.blocks = {}
         self.stop_reason = None
         self.truncated = False    # odpowiedź ucięta limitem tokenów
-        self.error = None         # komunikat błędu przysłany w strumieniu ({"error": …})
-        self.searches = []        # zapytania web_search wykryte w odpowiedzi (treść)
-        self._partial = {}        # niepełny JSON wejścia narzędzia (input_json_delta)
-        self._pending = b""       # niedokończona linia czekająca na kolejny fragment
-        self._chars = 0           # łączna długość self.text (bez sumowania przy każdym fragmencie)
-        self._block_text = {}     # fragmenty tekstu bloków Anthropic (indeks → lista), sklejane przy zamknięciu
+        # komunikat błędu przysłany w strumieniu ({"error": …})
+        self.error = None
+        # zapytania web_search wykryte w odpowiedzi (treść)
+        self.searches = []
+        # niepełny JSON wejścia narzędzia (input_json_delta)
+        self._partial = {}
+        # niedokończona linia czekająca na kolejny fragment
+        self._pending = b""
+        # łączna długość self.text (bez sumowania przy każdym fragmencie)
+        self._chars = 0
+        # fragmenty tekstu bloków Anthropic (indeks → lista), sklejane przy
+        # zamknięciu bloku
+        self._block_text = {}
 
-    # ------------------------------------------------------------------ strumień
+    # ---------------------------------------------------------------- strumień
     def feed(self, chunk):
-        """Dodaje fragment bajtów; zwraca listę zapytań web_search, które pojawiły się w tym fragmencie."""
+        """Dodaj fragment bajtów.
+
+        Zwraca listę zapytań web_search, które pojawiły się w tym fragmencie.
+        """
         before = len(self.searches)
         data = self._pending + bytes(chunk)
         lines = data.split(b"\n")
@@ -36,12 +53,13 @@ class StreamParser:
         return self.searches[before:]
 
     def flush(self):
-        """Koniec strumienia – przetwarza ostatnią linię bez znaku nowej linii."""
+        """Zakończ strumień – przetwórz ostatnią, niezakończoną linię."""
         if self._pending:
             self.line(self._pending.decode("utf-8", "replace").strip())
             self._pending = b""
 
     def chars(self):
+        """Liczba znaków tekstu odebranego do tej pory."""
         return self._chars
 
     def _add(self, piece):
@@ -53,16 +71,24 @@ class StreamParser:
         self._chars = sum(len(t) for t in pieces)
 
     def _join_block(self, idx):
-        """Skleja fragmenty tekstu bloku w block["text"] (raz, zamiast doklejania przy każdym fragmencie)."""
+        """Sklej fragmenty tekstu bloku w block["text"].
+
+        Raz, przy zamknięciu bloku – zamiast doklejania przy każdym
+        fragmencie.
+        """
         pieces = self._block_text.pop(idx, None)
         if pieces is not None and idx in self.blocks:
             self.blocks[idx]["text"] = "".join(pieces)
 
     def result_text(self):
+        """Pełny tekst odpowiedzi (z nową linią na końcu, gdy ucięty)."""
         return "".join(self.text) + ("\n" if self.truncated else "")
 
     def line(self, line):
-        """Linia SSE (Anthropic, OpenAI: „data: {…}”) lub NDJSON (Ollama)."""
+        """Przetwórz linię SSE (Anthropic, OpenAI) lub NDJSON (Ollama).
+
+        Linie SSE mają postać „data: {…}”.
+        """
         if not line or line.startswith((":", "event:")):
             return
         if line.startswith("data:"):
@@ -77,7 +103,8 @@ class StreamParser:
             return
         if ev.get("error"):
             err = ev["error"]
-            self.error = err.get("message") if isinstance(err, dict) else str(err)
+            self.error = (err.get("message") if isinstance(err, dict)
+                          else str(err))
             return
         if self.provider == "anthropic":
             self._anthropic_event(ev)
@@ -111,17 +138,21 @@ class StreamParser:
             if delta.get("type") == "text_delta":
                 piece = delta.get("text", "")
                 self._add(piece)
-                self._block_text.setdefault(idx, [block.get("text") or ""]).append(piece)
+                self._block_text.setdefault(
+                    idx, [block.get("text") or ""]).append(piece)
             elif delta.get("type") == "input_json_delta":
-                self._partial[idx] = self._partial.get(idx, "") + (delta.get("partial_json") or "")
-            elif delta.get("type") == "citations_delta" and delta.get("citation"):
+                self._partial[idx] = (self._partial.get(idx, "")
+                                      + (delta.get("partial_json") or ""))
+            elif (delta.get("type") == "citations_delta"
+                  and delta.get("citation")):
                 block.setdefault("citations", []).append(delta["citation"])
         elif typ == "content_block_stop":
             self._join_block(idx)
             block = self.blocks.get(idx) or {}
             if idx in self._partial:
                 try:
-                    block["input"] = json.loads(self._partial.pop(idx) or "{}")
+                    block["input"] = json.loads(
+                        self._partial.pop(idx) or "{}")
                 except ValueError:
                     block["input"] = {}
             self._note_search(block)
@@ -133,24 +164,30 @@ class StreamParser:
                 self.truncated = True
 
     def _note_search(self, block):
-        if block.get("type") == "server_tool_use" and block.get("name") == "web_search":
+        if (block.get("type") == "server_tool_use"
+                and block.get("name") == "web_search"):
             query = str((block.get("input") or {}).get("query") or "").strip()
             if query:
                 self.searches.append(query[:200])
 
-    # ------------------------------------------------------------------ odpowiedź niestrumieniowa
+    # ----------------------------------------------- odpowiedź niestrumieniowa
     def complete(self, raw):
-        """Pełna odpowiedź JSON (bez stream) – zwraca tekst i ustawia blocks/stop_reason/truncated/searches."""
+        """Odczytaj pełną odpowiedź JSON (bez stream) i zwróć jej tekst.
+
+        Ustawia też blocks, stop_reason, truncated i searches.
+        """
         data = json.loads(raw)
         if self.provider == "anthropic":
-            content = [c for c in data.get("content", []) if isinstance(c, dict)]
+            content = [c for c in data.get("content", [])
+                       if isinstance(c, dict)]
             self.blocks = dict(enumerate(content))
             self._block_text = {}
             for c in content:
                 self._note_search(c)
             self.stop_reason = data.get("stop_reason")
             self.truncated = self.stop_reason == "max_tokens"
-            self._set_text([c.get("text", "") for c in content if c.get("type") == "text"])
+            self._set_text([c.get("text", "") for c in content
+                            if c.get("type") == "text"])
             return self.result_text()
         if self.provider == "openai":
             choice = data["choices"][0]
@@ -164,7 +201,12 @@ class StreamParser:
         raise ValueError(tr("nieznany dostawca"))
 
     def continuation_content(self):
-        """Bloki odpowiedzi w postaci, którą API Anthropic przyjmie z powrotem jako treść asystenta (pause_turn)."""
-        for idx in list(self._block_text):     # bloki bez content_block_stop (strumień urwany)
+        """Bloki odpowiedzi jako treść asystenta do wznowienia tury.
+
+        Postać, którą API Anthropic przyjmie z powrotem po „pause_turn”.
+        """
+        # bloki bez content_block_stop (strumień urwany)
+        for idx in list(self._block_text):
             self._join_block(idx)
-        return [{k: v for k, v in self.blocks[i].items() if v is not None} for i in sorted(self.blocks)]
+        return [{k: v for k, v in self.blocks[i].items() if v is not None}
+                for i in sorted(self.blocks)]

@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Okno zatwierdzania działań o skutkach poza QGIS: kod PyQGIS, wczytanie lokalnego pliku."""
+"""Okno zatwierdzania działań o skutkach poza QGIS.
+
+Kod PyQGIS oraz wczytanie lokalnego pliku lub bazy danych.
+"""
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QFont
-from qgis.PyQt.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
+from qgis.PyQt.QtWidgets import (
+    QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
+)
 
 from ..constants import PLUGIN_NAME
 from ..i18n import tr
@@ -10,9 +15,19 @@ from . import styles
 
 
 class ConfirmDialog(QDialog):
-    def __init__(self, parent, title, intro, content, warnings=(), accept_text=None):
+    """Podgląd treści do zatwierdzenia; domyślnym przyciskiem jest „Pomiń”."""
+
+    def __init__(self, parent, title, intro, content, warnings=(),
+                 accept_text=None):
+        """Zbuduj okno.
+
+        title – dopisek w tytule okna, intro – opis nad treścią,
+        content – kod lub źródło danych, warnings – wykryte ryzyka kodu,
+        accept_text – napis przycisku zatwierdzenia.
+        """
         super().__init__(parent)
-        pal = styles.palette_for(parent) if parent is not None else styles.LIGHT
+        pal = (styles.palette_for(parent) if parent is not None
+               else styles.LIGHT)
         self.setWindowTitle(PLUGIN_NAME + " – " + title)
         self.setMinimumSize(560, 380)
         lay = QVBoxLayout(self)
@@ -20,8 +35,10 @@ class ConfirmDialog(QDialog):
         head.setWordWrap(True)
         lay.addWidget(head)
         if warnings:
-            warn = QLabel("⚠ " + tr("Kod zawiera konstrukcje o skutkach poza projektem QGIS: %s. "
-                                   "Zatwierdź tylko, jeśli rozumiesz, co robi.") % ", ".join(tr(w) for w in warnings))
+            warn = QLabel("⚠ " + tr(
+                "Kod zawiera konstrukcje o skutkach poza projektem QGIS: %s. "
+                "Zatwierdź tylko, jeśli rozumiesz, co robi.")
+                % ", ".join(tr(w) for w in warnings))
             warn.setWordWrap(True)
             warn.setStyleSheet("color:%s;font-weight:600;" % pal["error"])
             lay.addWidget(warn)
