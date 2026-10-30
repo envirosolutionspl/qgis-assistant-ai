@@ -257,10 +257,7 @@ class SettingsDialog(QDialog):
         self.del_key.setEnabled(has)
 
     def _insecure_endpoint(self):
-        """Klucz API przez nieszyfrowane http:// do innego komputera.
-
-        Audyt B4.
-        """
+        """Klucz API przez nieszyfrowane http:// do innego komputera."""
         if not PROVIDERS[self._prov()]["needs_key"]:
             return False
         url = QUrl(self.endpoint.text().strip())

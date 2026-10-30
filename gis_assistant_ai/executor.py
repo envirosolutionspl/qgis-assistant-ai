@@ -93,7 +93,7 @@ PENDING, RUNNING, DONE, ERROR, WAITING, SKIPPED = (
     "pending", "running", "done", "error", "waiting", "skipped")
 
 # Dostawcy czytający pliki z dysku – wczytanie wymaga potwierdzenia
-# użytkownika (audyt B2). Inny zbiór niż utils.LOCAL_PROVIDERS, który decyduje
+# użytkownika. Inny zbiór niż utils.LOCAL_PROVIDERS, który decyduje
 # tylko o skracaniu ścieżek w opisie źródła.
 CONSENT_PROVIDERS = {"ogr", "gdal", "delimitedtext", "spatialite", "pdal",
                      "mdal", "virtual", "postgres", "mssql", "oracle", "hana"}
@@ -190,8 +190,7 @@ class PlanExecutor(QObject):
         self._uldk_level = None
         self._uldk_step = None
         # Numer bieżącego uruchomienia – spóźnione odpowiedzi z poprzedniego
-        # (np. po „Zatrzymaj”) są ignorowane i nie przesuwają nowego planu
-        # (audyt A2).
+        # (np. po „Zatrzymaj”) są ignorowane i nie przesuwają nowego planu.
         self._run_id = 0
         # indeksy kroków load_layer zatwierdzonych w tym uruchomieniu
         self._confirmed_loads = set()
@@ -841,7 +840,6 @@ class PlanExecutor(QObject):
                 "nazwą.") % (provider or "?"))
         if needs_ok and self.idx not in self._confirmed_loads:
             # plik lub baza wskazane przez model – tylko za zgodą użytkownika
-            # (audyt B2)
             self._mark(step, WAITING)
             self.confirmLoad.emit(self.idx, "%s: %s" % (provider, uri))
             return

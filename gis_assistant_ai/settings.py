@@ -20,7 +20,7 @@ class Settings:
     DEFAULTS = {
         "provider": DEFAULT_PROVIDER,
         "send_samples": False,
-        # kod od modelu tylko po świadomym włączeniu (audyt B1)
+        # kod od modelu tylko po świadomym włączeniu
         "allow_python": False,
         "show_details": False,
         # tylko Anthropic Claude – jak w Asystencie AI geoportalu

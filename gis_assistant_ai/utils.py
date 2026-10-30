@@ -286,8 +286,7 @@ def python_risks(code):
 def is_web_url(url):
     """Sprawdź, czy adres to http(s).
 
-    Inne schematy (file:, smb:, ms-settings: …) mogą uruchamiać programy
-    (audyt A4).
+    Inne schematy (file:, smb:, ms-settings: …) mogą uruchamiać programy.
     """
     return bool(re.match(r"(?i)^https?://[^\s/$.?#][^\s]*$",
                          str(url or "").strip()))

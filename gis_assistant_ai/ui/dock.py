@@ -1117,7 +1117,7 @@ class GISAssistantAIDock(QgsDockWidget):
     def _open_url(url):
         """Otwórz w przeglądarce wyłącznie adres http(s).
 
-        Nigdy plików ani innych schematów (audyt A4).
+        Nigdy plików ani innych schematów.
         """
         if not url:
             return

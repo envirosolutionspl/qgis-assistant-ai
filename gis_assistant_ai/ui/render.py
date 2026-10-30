@@ -201,7 +201,7 @@ def tools(p, resp, installed_plugins):
                          "font-weight:600;'>%s</a>"
                          % (esc(t["dsm_page"]), p["primary"],
                             tr("▶ Menedżer źródeł danych")))
-        if is_web_url(t.get("plugin_url")):  # tylko http(s) – audyt A4
+        if is_web_url(t.get("plugin_url")):  # tylko http(s)
             slug = plugin_slug_from_url(t["plugin_url"])
             links.append("<a href='%s' style='color:%s;font-weight:600;'>"
                          "%s</a>" % (esc(t["plugin_url"]), p["primary"],
