@@ -283,6 +283,32 @@ def test_mcp_token_kept_only_as_digest(iface):
     assert fresh not in settings.data.values()
 
 
+def test_mcp_server_retries_when_port_is_busy(iface):
+    from qgis.PyQt.QtNetwork import QHostAddress, QTcpServer
+    from gis_assistant_ai.mcp_server import McpServer
+    local = QHostAddress(QHostAddress.SpecialAddress.LocalHost)
+    blocker = QTcpServer()
+    assert blocker.listen(local, 0)
+    port = blocker.serverPort()
+    server = McpServer(iface, FakeSettings({}))
+    try:
+        assert not server.start(port)
+        assert server._retry_timer.isActive()
+        blocker.close()
+        server._retry()
+        assert server.running and server.port == port
+        assert not server._retry_timer.isActive()
+        # zatrzymanie w trakcie oczekiwania odwołuje ponowną próbę
+        server.stop()
+        assert blocker.listen(local, port)
+        assert not server.start(port)
+        server.stop()
+        assert not server._retry_timer.isActive()
+    finally:
+        server.stop()
+        blocker.close()
+
+
 def test_dock_builds_and_cleans_up(iface):
     from gis_assistant_ai.ui.dock import GISAssistantAIDock
     dock = GISAssistantAIDock(iface, iface.window)

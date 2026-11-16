@@ -30,6 +30,10 @@ from .utils import sanitize_source, short_json
 # najdłuższe kroki: pobranie paczki BDOT10k, duże algorytmy
 MCP_TOOL_TIMEOUT_S = 20 * 60
 MCP_DEFAULT_PORT = 8765
+# port bywa chwilowo zajęty przy starcie QGIS (np. przez zamykaną poprzednią
+# instancję) – ponawiamy przez minutę
+MCP_RETRY_MS = 5000
+MCP_RETRY_MAX = 12
 
 INSTRUCTIONS = {
     "pl": (
@@ -231,6 +235,11 @@ class McpServer(QObject):
         # (do skopiowania konfiguracji); w ustawieniach jest jego skrót.
         self._token = None
         self._digest = None
+        self._retries = 0
+        self._retry_port = None
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._retry)
         self._dispatcher = proto.Dispatcher(self._call_tool, plugin_version(),
                                             instructions(), qgis_language())
 
@@ -322,19 +331,32 @@ class McpServer(QObject):
                 int(port)):
             msg = tr("Serwer MCP nie może nasłuchiwać na porcie %d: %s") % (
                 port, self._server.errorString())
-            _log("error", msg)
+            if not self._retries:
+                # jeden wpis w dzienniku, nie po każdej próbie
+                _log("error", msg)
             self._server.deleteLater()
             self._server = None
+            if self._retries < MCP_RETRY_MAX:
+                self._retries += 1
+                self._retry_port = port
+                self._retry_timer.start(MCP_RETRY_MS)
             self.stateChanged.emit(False, msg)
             return False
+        self._retry_timer.stop()
+        self._retries = 0
         self.token_digest()
         msg = tr("Serwer MCP nasłuchuje na %s") % self.url()
         _log("info", msg)
         self.stateChanged.emit(True, msg)
         return True
 
+    def _retry(self):
+        self.start(self._retry_port)
+
     def stop(self):
         """Zatrzymaj serwer; trwające wywołanie dostaje odpowiedź z błędem."""
+        self._retry_timer.stop()
+        self._retries = 0
         # najpierw odpowiedź dla trwającego wywołania (gniazdo jeszcze
         # istnieje), potem zamknięcie serwera
         if self._active is not None and not self._active.done:
